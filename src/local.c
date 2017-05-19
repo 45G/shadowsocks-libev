@@ -1499,7 +1499,7 @@ main(int argc, char **argv)
 #ifndef HAVE_LAUNCHD
         local_port == NULL ||
 #endif
-        (password == NULL && key == NULL)) {
+        (strcmp(method, "plain") && password == NULL && key == NULL)) {
         usage();
         exit(EXIT_FAILURE);
     }
