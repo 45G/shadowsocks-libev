@@ -70,6 +70,9 @@ typedef struct server {
     ev_timer delayed_connect_watcher;
 
     struct cork_dllist_item entries;
+    
+    int got_irep;
+    int got_frep;
 } server_t;
 
 typedef struct remote_ctx {

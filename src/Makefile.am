@@ -6,10 +6,11 @@ if !USE_SYSTEM_SHARED_LIB
 AM_CFLAGS += -I$(top_srcdir)/libbloom
 AM_CFLAGS += -I$(top_srcdir)/libipset/include
 AM_CFLAGS += -I$(top_srcdir)/libcork/include
+AM_CFLAGS += -I$(top_srcdir)/socks105
 endif
 AM_CFLAGS += $(LIBPCRE_CFLAGS)
 
-SS_COMMON_LIBS = $(INET_NTOP_LIB) $(LIBPCRE_LIBS)
+SS_COMMON_LIBS = $(INET_NTOP_LIB) $(LIBPCRE_LIBS) $(top_builddir)/socks105/libsocks105.a
 if !USE_SYSTEM_SHARED_LIB
 SS_COMMON_LIBS += $(top_builddir)/libbloom/libbloom.la \
                   $(top_builddir)/libipset/libipset.la \

@@ -40,12 +40,16 @@
 #include <linux/if.h>
 #include <linux/netfilter_ipv4.h>
 #include <linux/netfilter_ipv6/ip6_tables.h>
+#include <netinet/ip.h>
+#include <netinet/ip6.h>
 
 #include <libcork/core.h>
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
+
+#include <socks105.h>
 
 #include "http.h"
 #include "tls.h"
@@ -61,6 +65,14 @@
 
 #ifndef EWOULDBLOCK
 #define EWOULDBLOCK EAGAIN
+#endif
+
+#ifndef TCP_SAVE_SYN
+#define TCP_SAVE_SYN 27
+#endif
+
+#ifndef TCP_SAVED_SYN
+#define TCP_SAVED_SYN 28
 #endif
 
 #ifndef BUF_SIZE
@@ -98,6 +110,10 @@ static int mode      = TCP_ONLY;
 static int nofile    = 0;
 #endif
 static int fast_open = 0;
+static int force_tfo = 0;
+#ifdef TCP_SAVE_SYN
+static int save_syns = 0;
+#endif
 
 static struct ev_signal sigint_watcher;
 static struct ev_signal sigterm_watcher;
@@ -117,6 +133,32 @@ getdestaddr(int fd, struct sockaddr_storage *destaddr)
         }
     }
     return 0;
+}
+
+int
+setfastopen(int fd)
+{
+    int s = 0;
+#ifdef TCP_FASTOPEN
+    if (fast_open) {
+#ifdef __APPLE__
+        int opt = 1;
+#else
+        int opt = 5;
+#endif
+        s = setsockopt(fd, IPPROTO_TCP, TCP_FASTOPEN, &opt, sizeof(opt));
+
+        if (s == -1) {
+            if (errno == EPROTONOSUPPORT || errno == ENOPROTOOPT) {
+                LOGE("fast open is not supported on this platform");
+                fast_open = 0;
+            } else {
+                ERROR("setsockopt");
+            }
+        }
+    }
+#endif
+    return s;
 }
 
 int
@@ -414,6 +456,73 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     } else if (err == CRYPTO_NEED_MORE) {
         return; // Wait for more
     }
+    
+    if (!server->got_irep)
+    {
+        struct socks105_initial_reply *irep;
+        ssize_t size = socks105_initial_reply_parse(server->buf->data, server->buf->len, &irep);
+        
+        if (size == SOCKS105_ERROR_BUFFER)
+            return;
+        if (size < 0)
+        {
+            LOGE("error parsing irep: %d", (int)size);
+            close_and_free_remote(EV_A_ remote);
+            close_and_free_server(EV_A_ server);
+            return;
+        }
+        if (irep->irep_type == SOCKS105_INITIAL_REPLY_FAILURE)
+        {
+            LOGI("irep failure");
+            socks105_initial_reply_delete(irep);
+            close_and_free_remote(EV_A_ remote);
+            close_and_free_server(EV_A_ server);
+            return;
+        }
+        
+        server->got_irep = 1;
+        socks105_initial_reply_delete(irep);
+        
+        memmove(server->buf->data, server->buf->data + size, size);
+        server->buf->len -= size;
+        
+        if (server->buf->len == 0)
+            return;
+    }
+    
+    if (!server->got_frep)
+    {
+        struct socks105_final_reply *frep;
+        ssize_t size = socks105_final_reply_parse(server->buf->data, server->buf->len, &frep);
+        
+        if (size == SOCKS105_ERROR_BUFFER)
+            return;
+        if (size < 0)
+        {
+            LOGE("error parsing frep: %d", (int)size);
+            close_and_free_remote(EV_A_ remote);
+            close_and_free_server(EV_A_ server);
+            return;
+        }
+        if (frep->frep_type != SOCKS105_FINAL_REPLY_SUCCESS)
+        {
+            LOGI("frep failure: %d", (int)frep->frep_type);
+            socks105_final_reply_delete(frep);
+            close_and_free_remote(EV_A_ remote);
+            close_and_free_server(EV_A_ server);
+            return;
+        }
+        
+        server->got_frep = 1;
+        socks105_final_reply_delete(frep);
+        ev_io_start(EV_A_ & server->recv_ctx->io);
+        
+        memmove(server->buf->data, server->buf->data + size, size);
+        server->buf->len -= size;
+        
+        if (server->buf->len == 0)
+            return;
+    }
 
     int s = send(server->fd, server->buf->data, server->buf->len, 0);
 
@@ -470,6 +579,15 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             ev_io_start(EV_A_ & remote->recv_ctx->io);
             ev_timer_start(EV_A_ & remote->recv_ctx->watcher);
 
+            struct socks105_request req = {
+                .auth_info = { 0, NULL },
+                .req_type = SOCKS105_REQ_TCP_CONNECT,
+                .initial_data_size = remote->buf->len,
+                .initial_data = remote->buf->data,
+            };
+            
+            req.tfo = server->try_tfo;
+            
             // send destaddr
             buffer_t ss_addr_to_send;
             buffer_t *abuf = &ss_addr_to_send;
@@ -477,62 +595,51 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
 
             if (server->hostname_len > 0
                     && validate_hostname(server->hostname, server->hostname_len)) { // HTTP/SNI
-                uint16_t port;
+                req.server_info.addr_type = SOCKS105_ADDR_DOMAIN;
+                
+                req.server_info.addr.domain = server->hostname;
                 if (AF_INET6 == server->destaddr.ss_family) { // IPv6
-                    port = (((struct sockaddr_in6 *)&(server->destaddr))->sin6_port);
+                    req.server_info.port = ntohs(((struct sockaddr_in6 *)&(server->destaddr))->sin6_port);
                 } else {                             // IPv4
-                    port = (((struct sockaddr_in *)&(server->destaddr))->sin_port);
+                    req.server_info.port = ntohs(((struct sockaddr_in *)&(server->destaddr))->sin_port);
                 }
-
-                abuf->data[abuf->len++] = 3;          // Type 3 is hostname
-                abuf->data[abuf->len++] = server->hostname_len;
-                memcpy(abuf->data + abuf->len, server->hostname, server->hostname_len);
-                abuf->len += server->hostname_len;
-                memcpy(abuf->data + abuf->len, &port, 2);
             } else if (AF_INET6 == server->destaddr.ss_family) { // IPv6
-                abuf->data[abuf->len++] = 4;          // Type 4 is IPv6 address
-
-                size_t in6_addr_len = sizeof(struct in6_addr);
-                memcpy(abuf->data + abuf->len,
+                req.server_info.addr_type = SOCKS105_ADDR_IPV6;
+                
+                memcpy(req.server_info.addr.ipv6,
                        &(((struct sockaddr_in6 *)&(server->destaddr))->sin6_addr),
-                       in6_addr_len);
-                abuf->len += in6_addr_len;
-                memcpy(abuf->data + abuf->len,
-                       &(((struct sockaddr_in6 *)&(server->destaddr))->sin6_port),
-                       2);
+                       sizeof(struct in6_addr));
+                req.server_info.port = ntohs(((struct sockaddr_in6 *)&(server->destaddr))->sin6_port);
             } else {                             // IPv4
-                abuf->data[abuf->len++] = 1; // Type 1 is IPv4 address
-
-                size_t in_addr_len = sizeof(struct in_addr);
-                memcpy(abuf->data + abuf->len,
-                       &((struct sockaddr_in *)&(server->destaddr))->sin_addr, in_addr_len);
-                abuf->len += in_addr_len;
-                memcpy(abuf->data + abuf->len,
-                       &((struct sockaddr_in *)&(server->destaddr))->sin_port, 2);
+                req.server_info.addr_type = SOCKS105_ADDR_IPV4;
+                
+                req.server_info.addr.ipv4 = ((struct sockaddr_in *)&(server->destaddr))->sin_addr.s_addr;
+                req.server_info.port = ntohs(((struct sockaddr_in *)&(server->destaddr))->sin_port);
             }
-
-            abuf->len += 2;
-
-            int err = crypto->encrypt(abuf, server->e_ctx, BUF_SIZE);
-            if (err) {
-                LOGE("invalid password or cipher");
+            
+            ssize_t req_len = socks105_request_pack(&req, abuf->data, BUF_SIZE);
+            if (req_len < 0)
+            {
+                LOGE("error packing request %d", (int)req_len);
                 bfree(abuf);
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
                 return;
             }
 
-            err = crypto->encrypt(remote->buf, server->e_ctx, BUF_SIZE);
-            if (err) {
-                LOGE("invalid password or cipher");
-                bfree(abuf);
-                close_and_free_remote(EV_A_ remote);
-                close_and_free_server(EV_A_ server);
-                return;
-            }
-
-            bprepend(remote->buf, abuf, BUF_SIZE);
+            abuf->len = req_len;
+            memcpy(remote->buf->data, abuf->data, abuf->len);
+            remote->buf->len = abuf->len;
             bfree(abuf);
+
+            int err = crypto->encrypt(remote->buf, server->e_ctx, BUF_SIZE);
+            if (err) {
+                LOGE("invalid password or cipher");
+                bfree(abuf);
+                close_and_free_remote(EV_A_ remote);
+                close_and_free_server(EV_A_ server);
+                return;
+            }
         } else {
             ERROR("getpeername");
             // not connected
@@ -602,7 +709,14 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             remote->buf->len = 0;
             remote->buf->idx = 0;
             ev_io_stop(EV_A_ & remote_send_ctx->io);
-            ev_io_start(EV_A_ & server->recv_ctx->io);
+            if (!server->sent_req)
+            {
+                server->sent_req = 1;
+            }
+            else
+            {
+                ev_io_start(EV_A_ & server->recv_ctx->io);
+            }
         }
     }
 }
@@ -663,6 +777,58 @@ close_and_free_remote(EV_P_ remote_t *remote)
     }
 }
 
+#define TCPOPT_EOL 0
+#define TCPOPT_NOP 1
+#define TCPOPT_TFO 34
+
+static int
+was_tfo(int fd)
+{
+    if (!save_syns)
+        return 0;
+    
+    unsigned char buf[BUF_SIZE];
+    socklen_t buf_size = BUF_SIZE;
+    int err = getsockopt(fd, SOL_TCP, TCP_SAVED_SYN, buf, &buf_size);
+    
+    if (err < 0) {
+        LOGE("getsockopt(TCP_SAVED_SYN) failed: %d", errno);
+        return 0;
+    }
+    
+    struct tcphdr *tcp_header;
+    struct ip *ip_header = (struct ip *)buf;
+    if (ip_header->ip_v == 4)
+        tcp_header = (struct tcphdr *)(buf + ip_header->ip_hl * 4);
+    else if (ip_header->ip_v == 6)
+        tcp_header = (struct tcphdr *)(buf + sizeof(struct ip6_hdr));
+    else
+        return 0; //IPv7 is here!
+    
+    /* sanity assured by the (Linux) kernel up to here; options can still be spurious */
+    
+    unsigned char *options = (unsigned char *)(tcp_header + 1);
+    int options_len = tcp_header->doff * 4 - sizeof(struct tcphdr);
+    
+    for (int i = 0; i < options_len - 1;) {
+        if (options[i] == TCPOPT_EOL)
+            return 0;
+        if (options[i] == TCPOPT_TFO)
+            return 1;
+        if (options[i] == TCPOPT_NOP) {
+            i++;
+            continue;
+        }
+        
+        int optlen = options[i + 1];
+        if (optlen < 2)
+            return 0;
+        i += optlen;
+    }
+    
+    return 0;
+}
+
 static server_t *
 new_server(int fd)
 {
@@ -683,6 +849,11 @@ new_server(int fd)
 
     server->hostname     = NULL;
     server->hostname_len = 0;
+    
+    server->try_tfo  = force_tfo || (fast_open && was_tfo(fd));
+    server->sent_req = 0;
+    server->got_irep = 0;
+    server->got_frep = 0;
 
     server->e_ctx = ss_align(sizeof(cipher_ctx_t));
     server->d_ctx = ss_align(sizeof(cipher_ctx_t));
@@ -908,6 +1079,7 @@ main(int argc, char **argv)
         { "password",    required_argument, NULL, GETOPT_VAL_PASSWORD },
         { "key",         required_argument, NULL, GETOPT_VAL_KEY },
         { "help",        no_argument,       NULL, GETOPT_VAL_HELP },
+        { "force-tfo",   no_argument,       NULL, GETOPT_VAL_FORCE_TFO },
         { NULL,          0,                 NULL, 0 }
     };
 
@@ -999,6 +1171,9 @@ main(int argc, char **argv)
             break;
         case 'A':
             FATAL("One time auth has been deprecated. Try AEAD ciphers instead.");
+            break;
+        case GETOPT_VAL_FORCE_TFO:
+            force_tfo = 1;
             break;
         case '?':
             // The option character is not recognized.
@@ -1222,7 +1397,17 @@ main(int argc, char **argv)
             if (listen(listenfd, SOMAXCONN) == -1) {
                FATAL("listen() error");
             }
+            setfastopen(listenfd);
             setnonblocking(listenfd);
+            
+            if (fast_open && !force_tfo)
+            {
+                static const int one = 1;
+                if (setsockopt(listenfd, SOL_TCP, TCP_SAVE_SYN, &one, sizeof(one)) == 0)
+                    save_syns = 1;
+                else
+                    LOGE("can't detect TFO connection attempts");
+            }
 
             listen_ctx_current->fd = listenfd;
 
