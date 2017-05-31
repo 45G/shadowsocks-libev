@@ -509,7 +509,7 @@ connect_to_remote(EV_P_ struct addrinfo *res,
     remote_t *remote = new_remote(sockfd);
 
 #ifdef TCP_FASTOPEN
-    if (fast_open) {
+    if (fast_open && server->tfo) {
 #ifdef __APPLE__
         ((struct sockaddr_in *)(res->ai_addr))->sin_len = sizeof(struct sockaddr_in);
         sa_endpoints_t endpoints;
@@ -550,7 +550,7 @@ connect_to_remote(EV_P_ struct addrinfo *res,
     }
 #endif
 
-    if (!fast_open) {
+    if (!fast_open || !server->tfo) {
         int r = connect(sockfd, res->ai_addr, res->ai_addrlen);
 
         if (r == -1 && errno != CONNECT_IN_PROGRESS) {
