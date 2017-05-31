@@ -71,6 +71,7 @@ typedef struct server {
     int fd;
     int stage;
     int frag;
+    int tfo;
 
     buffer_t *buf;
 

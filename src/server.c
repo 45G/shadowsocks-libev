@@ -52,6 +52,8 @@
 #define SET_INTERFACE
 #endif
 
+#include <socks105.h>
+
 #include "netutils.h"
 #include "utils.h"
 #include "acl.h"
@@ -1305,6 +1307,7 @@ new_server(int fd, listen_ctx_t *listener)
     memset(server->send_ctx, 0, sizeof(server_ctx_t));
     balloc(server->buf, BUF_SIZE);
     server->fd                  = fd;
+    server->tfo                 = 0;
     server->recv_ctx->server    = server;
     server->recv_ctx->connected = 0;
     server->send_ctx->server    = server;

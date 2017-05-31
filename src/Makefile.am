@@ -6,6 +6,7 @@ if !USE_SYSTEM_SHARED_LIB
 AM_CFLAGS += -I$(top_srcdir)/libbloom
 AM_CFLAGS += -I$(top_srcdir)/libipset/include
 AM_CFLAGS += -I$(top_srcdir)/libcork/include
+AM_CFLAGS += -I$(top_srcdir)/socks105
 endif
 AM_CFLAGS += $(LIBPCRE_CFLAGS)
 
