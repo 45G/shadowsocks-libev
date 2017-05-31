@@ -733,7 +733,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         return;
     } else if (server->stage == STAGE_INIT) {
         /*
-         * Shadowsocks TCP Relay Header:
+         * Shadowsocks TCP Relay Header: (AXED!)
          *
          *    +------+----------+----------+
          *    | ATYP | DST.ADDR | DST.PORT |
@@ -742,6 +742,22 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
          *    +------+----------+----------+
          *
          */
+        
+        struct socks105_request req;
+        ssize_t size = socks105_request_parse(server->buf->data, server->buf->len, &req);
+        
+        if (size < 0)
+        {
+            if (size === SOCKS105_ERROR_BUFFER)
+            {
+                LOGI("SOCKS105 request truncated");
+                return;
+            }
+            
+            LOGE("SOCKS105 request error %d", size);
+            close_and_free_server(EV_A_ server);
+            return;
+        }
 
         int offset     = 0;
         int need_query = 0;
