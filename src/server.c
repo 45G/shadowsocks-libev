@@ -742,25 +742,24 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
          *
          */
         
-        struct socks105_request req;
+        struct socks105_request *req;
         ssize_t size = socks105_request_parse(server->buf->data, server->buf->len, &req);
         
         if (size < 0)
         {
-            if (size === SOCKS105_ERROR_BUFFER)
+            if (size == SOCKS105_ERROR_BUFFER)
             {
                 LOGI("SOCKS105 request truncated");
                 return;
             }
             
-            LOGE("SOCKS105 request error %d", size);
+            LOGE("SOCKS105 request error %d", (int)size);
             close_and_free_server(EV_A_ server);
             return;
         }
 
-        int offset     = 0;
+        int offset     = size - req->initial_data_size;
         int need_query = 0;
-        char atyp      = server->buf->data[offset++];
         char host[257] = { 0 };
         uint16_t port  = 0;
         struct addrinfo info;
@@ -769,41 +768,26 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         memset(&storage, 0, sizeof(struct sockaddr_storage));
 
         // get remote addr and port
-        if ((atyp & ADDRTYPE_MASK) == 1) {
-            // IP V4
+        if (req->server_info.addr_type == SOCKS105_ADDR_IPV4) {
             struct sockaddr_in *addr = (struct sockaddr_in *)&storage;
-            size_t in_addr_len       = sizeof(struct in_addr);
             addr->sin_family = AF_INET;
-            if (server->buf->len >= in_addr_len + 3) {
-                addr->sin_addr = *(struct in_addr *)(server->buf->data + offset);
-                dns_ntop(AF_INET, (const void *)(server->buf->data + offset),
-                         host, INET_ADDRSTRLEN);
-                offset += in_addr_len;
-            } else {
-                report_addr(server->fd, MALFORMED, "invalid length for ipv4 address");
-                close_and_free_server(EV_A_ server);
-                return;
-            }
-            addr->sin_port   = *(uint16_t *)(server->buf->data + offset);
+            addr->sin_addr.s_addr = req->server_info.addr.ipv4;
+            dns_ntop(AF_INET, (const void *)(&req->server_info.addr.ipv4),
+                     host, INET_ADDRSTRLEN);
+
+            addr->sin_port   = htons(req->server_info.port);
             info.ai_family   = AF_INET;
             info.ai_socktype = SOCK_STREAM;
             info.ai_protocol = IPPROTO_TCP;
             info.ai_addrlen  = sizeof(struct sockaddr_in);
             info.ai_addr     = (struct sockaddr *)addr;
-        } else if ((atyp & ADDRTYPE_MASK) == 3) {
-            // Domain name
-            uint8_t name_len = *(uint8_t *)(server->buf->data + offset);
-            if (name_len + 4 <= server->buf->len) {
-                memcpy(host, server->buf->data + offset + 1, name_len);
-                offset += name_len + 1;
-            } else {
-                report_addr(server->fd, MALFORMED, "invalid host name length");
-                close_and_free_server(EV_A_ server);
-                return;
-            }
+        } else if (req->server_info.addr_type == SOCKS105_ADDR_DOMAIN) {
+            uint8_t name_len = strlen(req->server_info.addr.domain);
+            strcpy(host, req->server_info.addr.domain);
             if (acl && outbound_block_match_host(host) == 1) {
                 if (verbose)
                     LOGI("outbound blocked %s", host);
+                socks105_request_delete(req);
                 close_and_free_server(EV_A_ server);
                 return;
             }
@@ -814,7 +798,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 if (ip.version == 4) {
                     struct sockaddr_in *addr = (struct sockaddr_in *)&storage;
                     dns_pton(AF_INET, host, &(addr->sin_addr));
-                    addr->sin_port   = *(uint16_t *)(server->buf->data + offset);
+                    addr->sin_port   = htons(req->server_info.port);
                     addr->sin_family = AF_INET;
                     info.ai_family   = AF_INET;
                     info.ai_addrlen  = sizeof(struct sockaddr_in);
@@ -822,7 +806,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 } else if (ip.version == 6) {
                     struct sockaddr_in6 *addr = (struct sockaddr_in6 *)&storage;
                     dns_pton(AF_INET6, host, &(addr->sin6_addr));
-                    addr->sin6_port   = *(uint16_t *)(server->buf->data + offset);
+                    addr->sin6_port   = htons(req->server_info.port);
                     addr->sin6_family = AF_INET6;
                     info.ai_family    = AF_INET6;
                     info.ai_addrlen   = sizeof(struct sockaddr_in6);
@@ -831,28 +815,20 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             } else {
                 if (!validate_hostname(host, name_len)) {
                     report_addr(server->fd, MALFORMED, "invalid host name");
+                    socks105_request_delete(req);
                     close_and_free_server(EV_A_ server);
                     return;
                 }
                 need_query = 1;
             }
-        } else if ((atyp & ADDRTYPE_MASK) == 4) {
+        } else if (req->server_info.addr_type == SOCKS105_ADDR_IPV6) {
             // IP V6
             struct sockaddr_in6 *addr = (struct sockaddr_in6 *)&storage;
-            size_t in6_addr_len       = sizeof(struct in6_addr);
             addr->sin6_family = AF_INET6;
-            if (server->buf->len >= in6_addr_len + 3) {
-                addr->sin6_addr = *(struct in6_addr *)(server->buf->data + offset);
-                dns_ntop(AF_INET6, (const void *)(server->buf->data + offset),
-                         host, INET6_ADDRSTRLEN);
-                offset += in6_addr_len;
-            } else {
-                LOGE("invalid header with addr type %d", atyp);
-                report_addr(server->fd, MALFORMED, "invalid length for ipv6 address");
-                close_and_free_server(EV_A_ server);
-                return;
-            }
-            addr->sin6_port  = *(uint16_t *)(server->buf->data + offset);
+            addr->sin6_addr = *(struct in6_addr *)(req->server_info.addr.ipv6);
+            dns_ntop(AF_INET6, (const void *)(req->server_info.addr.ipv6),
+                     host, INET6_ADDRSTRLEN);
+            addr->sin6_port  = htons(req->server_info.port);
             info.ai_family   = AF_INET6;
             info.ai_socktype = SOCK_STREAM;
             info.ai_protocol = IPPROTO_TCP;
@@ -860,27 +836,13 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             info.ai_addr     = (struct sockaddr *)addr;
         }
 
-        if (offset == 1) {
-            report_addr(server->fd, MALFORMED, "invalid address type");
-            close_and_free_server(EV_A_ server);
-            return;
-        }
+        port = htons(req->server_info.port);
 
-        port = (*(uint16_t *)(server->buf->data + offset));
-
-        offset += 2;
-
-        if (server->buf->len < offset) {
-            report_addr(server->fd, MALFORMED, "invalid request length");
-            close_and_free_server(EV_A_ server);
-            return;
-        } else {
-            server->buf->len -= offset;
-            memmove(server->buf->data, server->buf->data + offset, server->buf->len);
-        }
+        server->buf->len -= offset;
+        memmove(server->buf->data, server->buf->data + offset, server->buf->len);
 
         if (verbose) {
-            if ((atyp & ADDRTYPE_MASK) == 4)
+            if (req->server_info.addr_type == SOCKS105_ADDR_IPV6)
                 LOGI("connect to [%s]:%d", host, ntohs(port));
             else
                 LOGI("connect to %s:%d", host, ntohs(port));
@@ -891,6 +853,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
             if (remote == NULL) {
                 LOGE("connect error");
+                socks105_request_delete(req);
                 close_and_free_server(EV_A_ server);
                 return;
             } else {
@@ -924,7 +887,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
             ev_io_stop(EV_A_ & server_recv_ctx->io);
         }
-
+        
+        socks105_request_delete(req);
         return;
     }
     // should not reach here
