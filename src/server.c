@@ -509,7 +509,7 @@ connect_to_remote(EV_P_ struct addrinfo *res,
     remote_t *remote = new_remote(sockfd);
 
 #ifdef TCP_FASTOPEN
-    if (fast_open && server->tfo) {
+    if (fast_open && server->req->tfo) {
 #ifdef __APPLE__
         ((struct sockaddr_in *)(res->ai_addr))->sin_len = sizeof(struct sockaddr_in);
         sa_endpoints_t endpoints;
@@ -550,7 +550,7 @@ connect_to_remote(EV_P_ struct addrinfo *res,
     }
 #endif
 
-    if (!fast_open || !server->tfo) {
+    if (!fast_open || !server->req->tfo) {
         int r = connect(sockfd, res->ai_addr, res->ai_addrlen);
 
         if (r == -1 && errno != CONNECT_IN_PROGRESS) {
@@ -649,6 +649,73 @@ void setTosFromConnmark(remote_t* remote, server_t* server)
 	}
 }
 #endif
+
+static ssize_t
+send_stuff(int fd, const char *buf, size_t size)
+{
+    do
+    {
+        ssize_t sent = send(fd, buf, size, 0);
+        if (sent < 0)
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                continue;
+            
+            return -1;
+        }
+        buf += sent;
+        size -= sent;
+    }
+    while (size > 0);
+    
+    return 0;
+}
+
+static int
+send_initial_reply(int fd)
+{
+    struct socks105_initial_reply irep = {
+        .irep_type = SOCKS105_INITIAL_REPLY_SUCCESS,
+        .method = 0,
+        .auth_info = { 0, NULL },
+    };
+    
+    ssize_t size;
+    char buf[1500];
+    
+    size = socks105_initial_reply_pack(&irep, buf, 1500);
+    if (size < 0)
+        return -1;
+    
+    size = send_stuff(fd, buf, size);
+    if (size < 0)
+        return -1;
+    
+    return 0;
+}
+
+static int
+send_final_reply(int fd, enum socks105_final_reply_type type, struct socks105_server_info *server_info, uint16_t data_offset)
+{
+    struct socks105_final_reply frep = {
+        .frep_type = type,
+        .server_info = *server_info,
+        .data_offset = data_offset,        
+    };
+    
+    ssize_t size;
+    char buf[1500];
+    
+    size = socks105_final_reply_pack(&frep, buf, 1500);
+    if (size < 0)
+        return -1;
+    
+    size = send_stuff(fd, buf, size);
+    if (size < 0)
+        return -1;
+    
+    return 0;
+}
 
 static void
 server_recv_cb(EV_P_ ev_io *w, int revents)
@@ -767,7 +834,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         memset(&info, 0, sizeof(struct addrinfo));
         memset(&storage, 0, sizeof(struct sockaddr_storage));
 
-	server->tfo = req->tfo;
+        server->req = req;
 	
         // get remote addr and port
         if (req->server_info.addr_type == SOCKS105_ADDR_IPV4) {
@@ -817,7 +884,6 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             } else {
                 if (!validate_hostname(host, name_len)) {
                     report_addr(server->fd, MALFORMED, "invalid host name");
-                    socks105_request_delete(req);
                     close_and_free_server(EV_A_ server);
                     return;
                 }
@@ -849,19 +915,33 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             else
                 LOGI("connect to %s:%d", host, ntohs(port));
         }
+	
+        if (send_initial_reply(server->fd) < 0)
+        {
+            LOGE("initial reply error");
+            close_and_free_server(EV_A_ server);
+            return;
+        }
 
         if (!need_query) {
             remote_t *remote = connect_to_remote(EV_A_ & info, server);
 
             if (remote == NULL) {
                 LOGE("connect error");
-                socks105_request_delete(req);
+                send_final_reply(server->fd, SOCKS105_FINAL_REPLY_REFUSED, &req->server_info, req->initial_data_size);
                 close_and_free_server(EV_A_ server);
                 return;
             } else {
                 server->remote = remote;
                 remote->server = server;
-
+                
+                if (send_final_reply(server->fd, SOCKS105_FINAL_REPLY_SUCCESS, &req->server_info, req->initial_data_size) < 0)
+                {
+                    LOGE("send final reply error");
+                    close_and_free_remote(EV_A_ remote);
+                    close_and_free_server(EV_A_ server);
+                    return;
+                }
                 // XXX: should handle buffer carefully
                 if (server->buf->len > 0) {
                     brealloc(remote->buf, server->buf->len, BUF_SIZE);
@@ -890,7 +970,6 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             ev_io_stop(EV_A_ & server_recv_ctx->io);
         }
         
-        socks105_request_delete(req);
         return;
     }
     // should not reach here
@@ -993,6 +1072,7 @@ server_resolve_cb(struct sockaddr *addr, void *data)
 
     if (addr == NULL) {
         LOGE("unable to resolve %s", query->hostname);
+        send_final_reply(server->fd, SOCKS105_FINAL_REPLY_REFUSED, &server->req->server_info, server->req->initial_data_size);
         close_and_free_server(EV_A_ server);
     } else {
         if (verbose) {
@@ -1014,12 +1094,21 @@ server_resolve_cb(struct sockaddr *addr, void *data)
         }
 
         remote_t *remote = connect_to_remote(EV_A_ & info, server);
-
+        
         if (remote == NULL) {
+            send_final_reply(server->fd, SOCKS105_FINAL_REPLY_REFUSED, &server->req->server_info, server->req->initial_data_size);
             close_and_free_server(EV_A_ server);
         } else {
             server->remote = remote;
             remote->server = server;
+            
+            if (send_final_reply(server->fd, SOCKS105_FINAL_REPLY_SUCCESS, &server->req->server_info, server->req->initial_data_size) < 0)
+            {
+                LOGE("send final reply error");
+                close_and_free_remote(EV_A_ remote);
+                close_and_free_server(EV_A_ server);
+                return;
+            }
 
             // XXX: should handle buffer carefully
             if (server->buf->len > 0) {
@@ -1288,7 +1377,6 @@ new_server(int fd, listen_ctx_t *listener)
     memset(server->send_ctx, 0, sizeof(server_ctx_t));
     balloc(server->buf, BUF_SIZE);
     server->fd                  = fd;
-    server->tfo                 = 0;
     server->recv_ctx->server    = server;
     server->recv_ctx->connected = 0;
     server->send_ctx->server    = server;
@@ -1298,6 +1386,7 @@ new_server(int fd, listen_ctx_t *listener)
     server->query               = NULL;
     server->listen_ctx          = listener;
     server->remote              = NULL;
+    server->req                 = NULL;
 
     server->e_ctx = ss_align(sizeof(cipher_ctx_t));
     server->d_ctx = ss_align(sizeof(cipher_ctx_t));
@@ -1348,6 +1437,8 @@ free_server(server_t *server)
         bfree(server->buf);
         ss_free(server->buf);
     }
+    if (server->req != NULL)
+        socks105_request_delete(server->req);
 
     ss_free(server->recv_ctx);
     ss_free(server->send_ctx);
