@@ -768,6 +768,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         memset(&info, 0, sizeof(struct addrinfo));
         memset(&storage, 0, sizeof(struct sockaddr_storage));
 
+	server->tfo = req->tfo;
+	
         // get remote addr and port
         if (req->server_info.addr_type == SOCKS105_ADDR_IPV4) {
             struct sockaddr_in *addr = (struct sockaddr_in *)&storage;
