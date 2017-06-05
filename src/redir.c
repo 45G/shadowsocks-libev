@@ -1078,7 +1078,7 @@ main(int argc, char **argv)
     }
 
     if (remote_num == 0 || remote_port == NULL || local_port == NULL
-            || (password == NULL && key == NULL)) {
+            || (strcmp(method, "plain") && password == NULL && key == NULL)) {
         usage();
         exit(EXIT_FAILURE);
     }

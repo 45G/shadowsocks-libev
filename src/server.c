@@ -52,6 +52,8 @@
 #define SET_INTERFACE
 #endif
 
+#include <socks105.h>
+
 #include "netutils.h"
 #include "utils.h"
 #include "acl.h"
