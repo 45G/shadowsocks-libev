@@ -746,9 +746,7 @@ new_server(int fd)
     server->hostname     = NULL;
     server->hostname_len = 0;
     
-    socklen_t oplen = sizeof(int);
-    server->try_tfo = 0;
-    getsockopt(fd, SOL_TCP, TCP_FASTOPEN, &server->try_tfo, &oplen); //TODO: right????
+    server->try_tfo = 1; //TODO: maybe try TCP_SAVE_SYN
     server->got_irep = 0;
     server->got_frep = 0;
 
