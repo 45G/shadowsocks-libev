@@ -40,6 +40,8 @@
 #include <linux/if.h>
 #include <linux/netfilter_ipv4.h>
 #include <linux/netfilter_ipv6/ip6_tables.h>
+#include <netinet/ip.h>
+#include <netinet/ip6.h>
 
 #include <udns.h>
 #include <libcork/core.h>
@@ -752,6 +754,55 @@ close_and_free_remote(EV_P_ remote_t *remote)
     }
 }
 
+#define TCPOPT_EOL 0
+#define TCPOPT_NOP 1
+#define TCPOPT_TFO 34
+
+static int
+was_tfo(int fd)
+{
+    unsigned char buf[BUF_SIZE];
+    socklen_t buf_size = BUF_SIZE;
+    int err = getsockopt(fd, SOL_TCP, TCP_SAVED_SYN, buf, &buf_size);
+    
+    if (err < 0) {
+        LOGE("getsockopt(TCP_SAVED_SYN) failed: %d", errno);
+        return 0;
+    }
+    
+    struct tcphdr *tcp_header;
+    struct ip *ip_header = (struct ip *)buf;
+    if (ip_header->ip_v == 4)
+        tcp_header = (struct tcphdr *)(buf + ip_header->ip_hl * 4);
+    else if (ip_header->ip_v == 6)
+        tcp_header = (struct tcphdr *)(buf + sizeof(struct ip6_hdr));
+    else
+        return 0; //IPv7 is here!
+    
+    /* sanity assured by the (Linux) kernel up to here; options can still be spurious */
+    
+    unsigned char *options = (unsigned char *)(tcp_header + 1);
+    int options_len = tcp_header->doff * 4 - sizeof(struct tcphdr);
+    
+    for (int i = 0; i < options_len - 1;) {
+        if (options[i] == TCPOPT_EOL)
+            return 0;
+        if (options[i] == TCPOPT_TFO)
+            return 1;
+        if (options[i] == TCPOPT_NOP) {
+            i++;
+            continue;
+        }
+        
+        int optlen = options[i + 1];
+        if (optlen < 2)
+            return 0;
+        i += optlen;
+    }
+    
+    return 0;
+}
+
 static server_t *
 new_server(int fd)
 {
@@ -773,7 +824,7 @@ new_server(int fd)
     server->hostname     = NULL;
     server->hostname_len = 0;
     
-    server->try_tfo = 1; //TODO: maybe try TCP_SAVE_SYN
+    server->try_tfo  = was_tfo(fd);
     server->got_irep = 0;
     server->got_frep = 0;
 
@@ -1314,6 +1365,9 @@ main(int argc, char **argv)
             }
             setfastopen(listenfd);
             setnonblocking(listenfd);
+            
+            static const int one = 1;
+            setsockopt(listenfd, SOL_TCP, TCP_SAVE_SYN, &one, sizeof(one));
 
             listen_ctx_current->fd = listenfd;
 
