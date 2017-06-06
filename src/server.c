@@ -509,7 +509,7 @@ connect_to_remote(EV_P_ struct addrinfo *res,
     remote_t *remote = new_remote(sockfd);
 
 #ifdef TCP_FASTOPEN
-    if (fast_open) {
+    if (fast_open && server->req->tfo) {
 #ifdef __APPLE__
         ((struct sockaddr_in *)(res->ai_addr))->sin_len = sizeof(struct sockaddr_in);
         sa_endpoints_t endpoints;
@@ -550,7 +550,7 @@ connect_to_remote(EV_P_ struct addrinfo *res,
     }
 #endif
 
-    if (!fast_open) {
+    if (!fast_open || !server->req->tfo) {
         int r = connect(sockfd, res->ai_addr, res->ai_addrlen);
 
         if (r == -1 && errno != CONNECT_IN_PROGRESS) {
@@ -650,6 +650,73 @@ void setTosFromConnmark(remote_t* remote, server_t* server)
 }
 #endif
 
+static ssize_t
+send_stuff(int fd, const char *buf, size_t size)
+{
+    do
+    {
+        ssize_t sent = send(fd, buf, size, 0);
+        if (sent < 0)
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                continue;
+            
+            return -1;
+        }
+        buf += sent;
+        size -= sent;
+    }
+    while (size > 0);
+    
+    return 0;
+}
+
+static int
+send_initial_reply(int fd)
+{
+    struct socks105_initial_reply irep = {
+        .irep_type = SOCKS105_INITIAL_REPLY_SUCCESS,
+        .method = 0,
+        .auth_info = { 0, NULL },
+    };
+    
+    ssize_t size;
+    char buf[1500];
+    
+    size = socks105_initial_reply_pack(&irep, buf, 1500);
+    if (size < 0)
+        return -1;
+    
+    size = send_stuff(fd, buf, size);
+    if (size < 0)
+        return -1;
+    
+    return 0;
+}
+
+static int
+send_final_reply(int fd, enum socks105_final_reply_type type, struct socks105_server_info *server_info, uint16_t data_offset)
+{
+    struct socks105_final_reply frep = {
+        .frep_type = type,
+        .server_info = *server_info,
+        .data_offset = data_offset,        
+    };
+    
+    ssize_t size;
+    char buf[1500];
+    
+    size = socks105_final_reply_pack(&frep, buf, 1500);
+    if (size < 0)
+        return -1;
+    
+    size = send_stuff(fd, buf, size);
+    if (size < 0)
+        return -1;
+    
+    return 0;
+}
+
 static void
 server_recv_cb(EV_P_ ev_io *w, int revents)
 {
@@ -732,7 +799,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         return;
     } else if (server->stage == STAGE_INIT) {
         /*
-         * Shadowsocks TCP Relay Header:
+         * Shadowsocks TCP Relay Header: (AXED!)
          *
          *    +------+----------+----------+----------------+
          *    | ATYP | DST.ADDR | DST.PORT |    HMAC-SHA1   |
@@ -741,10 +808,25 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
          *    +------+----------+----------+----------------+
          *
          */
+        
+        struct socks105_request *req;
+        ssize_t size = socks105_request_parse(server->buf->data, server->buf->len, &req);
+        
+        if (size < 0)
+        {
+            if (size == SOCKS105_ERROR_BUFFER)
+            {
+                LOGI("SOCKS105 request truncated");
+                return;
+            }
+            
+            LOGE("SOCKS105 request error %d", (int)size);
+            close_and_free_server(EV_A_ server);
+            return;
+        }
 
-        int offset     = 0;
+        int offset     = size - req->initial_data_size;
         int need_query = 0;
-        char atyp      = server->buf->data[offset++];
         char host[257] = { 0 };
         uint16_t port  = 0;
         struct addrinfo info;
@@ -752,42 +834,29 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         memset(&info, 0, sizeof(struct addrinfo));
         memset(&storage, 0, sizeof(struct sockaddr_storage));
 
+        server->req = req;
+	
         // get remote addr and port
-        if ((atyp & ADDRTYPE_MASK) == 1) {
-            // IP V4
+        if (req->server_info.addr_type == SOCKS105_ADDR_IPV4) {
             struct sockaddr_in *addr = (struct sockaddr_in *)&storage;
-            size_t in_addr_len       = sizeof(struct in_addr);
             addr->sin_family = AF_INET;
-            if (server->buf->len >= in_addr_len + 3) {
-                addr->sin_addr = *(struct in_addr *)(server->buf->data + offset);
-                dns_ntop(AF_INET, (const void *)(server->buf->data + offset),
-                         host, INET_ADDRSTRLEN);
-                offset += in_addr_len;
-            } else {
-                report_addr(server->fd, MALFORMED, "invalid length for ipv4 address");
-                close_and_free_server(EV_A_ server);
-                return;
-            }
-            addr->sin_port   = *(uint16_t *)(server->buf->data + offset);
+            addr->sin_addr.s_addr = req->server_info.addr.ipv4;
+            dns_ntop(AF_INET, (const void *)(&req->server_info.addr.ipv4),
+                     host, INET_ADDRSTRLEN);
+
+            addr->sin_port   = htons(req->server_info.port);
             info.ai_family   = AF_INET;
             info.ai_socktype = SOCK_STREAM;
             info.ai_protocol = IPPROTO_TCP;
             info.ai_addrlen  = sizeof(struct sockaddr_in);
             info.ai_addr     = (struct sockaddr *)addr;
-        } else if ((atyp & ADDRTYPE_MASK) == 3) {
-            // Domain name
-            uint8_t name_len = *(uint8_t *)(server->buf->data + offset);
-            if (name_len + 4 <= server->buf->len) {
-                memcpy(host, server->buf->data + offset + 1, name_len);
-                offset += name_len + 1;
-            } else {
-                report_addr(server->fd, MALFORMED, "invalid host name length");
-                close_and_free_server(EV_A_ server);
-                return;
-            }
+        } else if (req->server_info.addr_type == SOCKS105_ADDR_DOMAIN) {
+            uint8_t name_len = strlen(req->server_info.addr.domain);
+            strcpy(host, req->server_info.addr.domain);
             if (acl && outbound_block_match_host(host) == 1) {
                 if (verbose)
                     LOGI("outbound blocked %s", host);
+                socks105_request_delete(req);
                 close_and_free_server(EV_A_ server);
                 return;
             }
@@ -798,7 +867,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 if (ip.version == 4) {
                     struct sockaddr_in *addr = (struct sockaddr_in *)&storage;
                     dns_pton(AF_INET, host, &(addr->sin_addr));
-                    addr->sin_port   = *(uint16_t *)(server->buf->data + offset);
+                    addr->sin_port   = htons(req->server_info.port);
                     addr->sin_family = AF_INET;
                     info.ai_family   = AF_INET;
                     info.ai_addrlen  = sizeof(struct sockaddr_in);
@@ -806,7 +875,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 } else if (ip.version == 6) {
                     struct sockaddr_in6 *addr = (struct sockaddr_in6 *)&storage;
                     dns_pton(AF_INET6, host, &(addr->sin6_addr));
-                    addr->sin6_port   = *(uint16_t *)(server->buf->data + offset);
+                    addr->sin6_port   = htons(req->server_info.port);
                     addr->sin6_family = AF_INET6;
                     info.ai_family    = AF_INET6;
                     info.ai_addrlen   = sizeof(struct sockaddr_in6);
@@ -820,23 +889,14 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 }
                 need_query = 1;
             }
-        } else if ((atyp & ADDRTYPE_MASK) == 4) {
+        } else if (req->server_info.addr_type == SOCKS105_ADDR_IPV6) {
             // IP V6
             struct sockaddr_in6 *addr = (struct sockaddr_in6 *)&storage;
-            size_t in6_addr_len       = sizeof(struct in6_addr);
             addr->sin6_family = AF_INET6;
-            if (server->buf->len >= in6_addr_len + 3) {
-                addr->sin6_addr = *(struct in6_addr *)(server->buf->data + offset);
-                dns_ntop(AF_INET6, (const void *)(server->buf->data + offset),
-                         host, INET6_ADDRSTRLEN);
-                offset += in6_addr_len;
-            } else {
-                LOGE("invalid header with addr type %d", atyp);
-                report_addr(server->fd, MALFORMED, "invalid length for ipv6 address");
-                close_and_free_server(EV_A_ server);
-                return;
-            }
-            addr->sin6_port  = *(uint16_t *)(server->buf->data + offset);
+            addr->sin6_addr = *(struct in6_addr *)(req->server_info.addr.ipv6);
+            dns_ntop(AF_INET6, (const void *)(req->server_info.addr.ipv6),
+                     host, INET6_ADDRSTRLEN);
+            addr->sin6_port  = htons(req->server_info.port);
             info.ai_family   = AF_INET6;
             info.ai_socktype = SOCK_STREAM;
             info.ai_protocol = IPPROTO_TCP;
@@ -844,30 +904,23 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             info.ai_addr     = (struct sockaddr *)addr;
         }
 
-        if (offset == 1) {
-            report_addr(server->fd, MALFORMED, "invalid address type");
-            close_and_free_server(EV_A_ server);
-            return;
-        }
+        port = htons(req->server_info.port);
 
-        port = (*(uint16_t *)(server->buf->data + offset));
-
-        offset += 2;
-
-        if (server->buf->len < offset) {
-            report_addr(server->fd, MALFORMED, "invalid request length");
-            close_and_free_server(EV_A_ server);
-            return;
-        } else {
-            server->buf->len -= offset;
-            memmove(server->buf->data, server->buf->data + offset, server->buf->len);
-        }
+        server->buf->len -= offset;
+        memmove(server->buf->data, server->buf->data + offset, server->buf->len);
 
         if (verbose) {
-            if ((atyp & ADDRTYPE_MASK) == 4)
+            if (req->server_info.addr_type == SOCKS105_ADDR_IPV6)
                 LOGI("connect to [%s]:%d", host, ntohs(port));
             else
                 LOGI("connect to %s:%d", host, ntohs(port));
+        }
+	
+        if (send_initial_reply(server->fd) < 0)
+        {
+            LOGE("initial reply error");
+            close_and_free_server(EV_A_ server);
+            return;
         }
 
         if (!need_query) {
@@ -875,12 +928,20 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
             if (remote == NULL) {
                 LOGE("connect error");
+                send_final_reply(server->fd, SOCKS105_FINAL_REPLY_REFUSED, &req->server_info, req->initial_data_size);
                 close_and_free_server(EV_A_ server);
                 return;
             } else {
                 server->remote = remote;
                 remote->server = server;
-
+                
+                if (send_final_reply(server->fd, SOCKS105_FINAL_REPLY_SUCCESS, &req->server_info, req->initial_data_size) < 0)
+                {
+                    LOGE("send final reply error");
+                    close_and_free_remote(EV_A_ remote);
+                    close_and_free_server(EV_A_ server);
+                    return;
+                }
                 // XXX: should handle buffer carefully
                 if (server->buf->len > 0) {
                     brealloc(remote->buf, server->buf->len, BUF_SIZE);
@@ -908,7 +969,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
             ev_io_stop(EV_A_ & server_recv_ctx->io);
         }
-
+        
         return;
     }
     // should not reach here
@@ -1011,6 +1072,7 @@ server_resolve_cb(struct sockaddr *addr, void *data)
 
     if (addr == NULL) {
         LOGE("unable to resolve %s", query->hostname);
+        send_final_reply(server->fd, SOCKS105_FINAL_REPLY_REFUSED, &server->req->server_info, server->req->initial_data_size);
         close_and_free_server(EV_A_ server);
     } else {
         if (verbose) {
@@ -1032,12 +1094,21 @@ server_resolve_cb(struct sockaddr *addr, void *data)
         }
 
         remote_t *remote = connect_to_remote(EV_A_ & info, server);
-
+        
         if (remote == NULL) {
+            send_final_reply(server->fd, SOCKS105_FINAL_REPLY_REFUSED, &server->req->server_info, server->req->initial_data_size);
             close_and_free_server(EV_A_ server);
         } else {
             server->remote = remote;
             remote->server = server;
+            
+            if (send_final_reply(server->fd, SOCKS105_FINAL_REPLY_SUCCESS, &server->req->server_info, server->req->initial_data_size) < 0)
+            {
+                LOGE("send final reply error");
+                close_and_free_remote(EV_A_ remote);
+                close_and_free_server(EV_A_ server);
+                return;
+            }
 
             // XXX: should handle buffer carefully
             if (server->buf->len > 0) {
@@ -1315,6 +1386,7 @@ new_server(int fd, listen_ctx_t *listener)
     server->query               = NULL;
     server->listen_ctx          = listener;
     server->remote              = NULL;
+    server->req                 = NULL;
 
     server->e_ctx = ss_align(sizeof(cipher_ctx_t));
     server->d_ctx = ss_align(sizeof(cipher_ctx_t));
@@ -1365,6 +1437,8 @@ free_server(server_t *server)
         bfree(server->buf);
         ss_free(server->buf);
     }
+    if (server->req != NULL)
+        socks105_request_delete(server->req);
 
     ss_free(server->recv_ctx);
     ss_free(server->send_ctx);

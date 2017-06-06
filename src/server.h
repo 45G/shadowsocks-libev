@@ -87,6 +87,7 @@ typedef struct server {
 #ifdef USE_NFCONNTRACK_TOS
     struct dscptracker* tracker;
 #endif
+    struct socks105_request *req;
 } server_t;
 
 typedef struct query {
