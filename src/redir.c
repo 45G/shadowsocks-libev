@@ -48,6 +48,8 @@
 #include "config.h"
 #endif
 
+#include <socks105.h>
+
 #include "http.h"
 #include "tls.h"
 #include "plugin.h"
@@ -469,6 +471,15 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             ev_io_start(EV_A_ & remote->recv_ctx->io);
             ev_timer_start(EV_A_ & remote->recv_ctx->watcher);
 
+            struct socks105_request req = {
+                .auth_info = { 0, NULL },
+                .req_type = SOCKS105_REQ_TCP_CONNECT,
+                .initial_data_size = remote->buf->len,
+                .initial_data = remote->buf->data,
+            };
+            
+            req.tfo = server->try_tfo;
+            
             // send destaddr
             buffer_t ss_addr_to_send;
             buffer_t *abuf = &ss_addr_to_send;
@@ -476,60 +487,49 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
 
             if (server->hostname_len > 0
                     && validate_hostname(server->hostname, server->hostname_len)) { // HTTP/SNI
-                uint16_t port;
+                req.server_info.addr_type = SOCKS105_ADDR_DOMAIN;
+                
+                req.server_info.addr.domain = server->hostname;
                 if (AF_INET6 == server->destaddr.ss_family) { // IPv6
-                    port = (((struct sockaddr_in6 *)&(server->destaddr))->sin6_port);
+                    req.server_info.port = ntohs(((struct sockaddr_in6 *)&(server->destaddr))->sin6_port);
                 } else {                             // IPv4
-                    port = (((struct sockaddr_in *)&(server->destaddr))->sin_port);
+                    req.server_info.port = ntohs(((struct sockaddr_in *)&(server->destaddr))->sin_port);
                 }
-
-                abuf->data[abuf->len++] = 3;          // Type 3 is hostname
-                abuf->data[abuf->len++] = server->hostname_len;
-                memcpy(abuf->data + abuf->len, server->hostname, server->hostname_len);
-                abuf->len += server->hostname_len;
-                memcpy(abuf->data + abuf->len, &port, 2);
             } else if (AF_INET6 == server->destaddr.ss_family) { // IPv6
-                abuf->data[abuf->len++] = 4;          // Type 4 is IPv6 address
-
-                size_t in6_addr_len = sizeof(struct in6_addr);
-                memcpy(abuf->data + abuf->len,
+                req.server_info.addr_type = SOCKS105_ADDR_IPV6;
+                
+                memcpy(req.server_info.addr.ipv6,
                        &(((struct sockaddr_in6 *)&(server->destaddr))->sin6_addr),
-                       in6_addr_len);
-                abuf->len += in6_addr_len;
-                memcpy(abuf->data + abuf->len,
-                       &(((struct sockaddr_in6 *)&(server->destaddr))->sin6_port),
-                       2);
+                       sizeof(struct in6_addr));
+                req.server_info.port = ntohs(((struct sockaddr_in6 *)&(server->destaddr))->sin6_port);
             } else {                             // IPv4
-                abuf->data[abuf->len++] = 1; // Type 1 is IPv4 address
+                req.server_info.addr_type = SOCKS105_ADDR_IPV4;
 
-                size_t in_addr_len = sizeof(struct in_addr);
-                memcpy(abuf->data + abuf->len,
-                       &((struct sockaddr_in *)&(server->destaddr))->sin_addr, in_addr_len);
-                abuf->len += in_addr_len;
-                memcpy(abuf->data + abuf->len,
-                       &((struct sockaddr_in *)&(server->destaddr))->sin_port, 2);
+                req.server_info.addr.ipv4 = ((struct sockaddr_in *)&(server->destaddr))->sin_addr.s_addr;
+                req.server_info.port = ntohs(((struct sockaddr_in *)&(server->destaddr))->sin_port);
             }
-
-            abuf->len += 2;
-
-            int err = crypto->encrypt(abuf, server->e_ctx, BUF_SIZE);
-            if (err) {
-                LOGE("invalid password or cipher");
+            
+            ssize_t req_len = socks105_request_pack(&req, abuf->data, BUF_SIZE);
+            if (req_len < 0)
+            {
+                LOGE("error packing request %d", (int)req_len);
+                bfree(abuf);
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
                 return;
             }
 
-            err = crypto->encrypt(remote->buf, server->e_ctx, BUF_SIZE);
-            if (err) {
-                LOGE("invalid password or cipher");
-                close_and_free_remote(EV_A_ remote);
-                close_and_free_server(EV_A_ server);
-                return;
-            }
-
-            bprepend(remote->buf, abuf, BUF_SIZE);
+            abuf->len = req_len;
+            memcpy(remote->buf->data, abuf->data, abuf->len);
             bfree(abuf);
+
+            int err = crypto->encrypt(remote->buf, server->e_ctx, BUF_SIZE);
+            if (err) {
+                LOGE("invalid password or cipher");
+                close_and_free_remote(EV_A_ remote);
+                close_and_free_server(EV_A_ server);
+                return;
+            }
         } else {
             ERROR("getpeername");
             // not connected
