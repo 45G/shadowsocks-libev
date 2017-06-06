@@ -583,6 +583,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
 
             abuf->len = req_len;
             memcpy(remote->buf->data, abuf->data, abuf->len);
+            remote->buf->len = abuf->len;
             bfree(abuf);
 
             int err = crypto->encrypt(remote->buf, server->e_ctx, BUF_SIZE);
