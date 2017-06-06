@@ -122,6 +122,32 @@ getdestaddr(int fd, struct sockaddr_storage *destaddr)
 }
 
 int
+setfastopen(int fd)
+{
+    int s = 0;
+#ifdef TCP_FASTOPEN
+    if (fast_open) {
+#ifdef __APPLE__
+        int opt = 1;
+#else
+        int opt = 5;
+#endif
+        s = setsockopt(fd, IPPROTO_TCP, TCP_FASTOPEN, &opt, sizeof(opt));
+
+        if (s == -1) {
+            if (errno == EPROTONOSUPPORT || errno == ENOPROTOOPT) {
+                LOGE("fast open is not supported on this platform");
+                fast_open = 0;
+            } else {
+                ERROR("setsockopt");
+            }
+        }
+    }
+#endif
+    return s;
+}
+
+int
 setnonblocking(int fd)
 {
     int flags;
@@ -1280,6 +1306,7 @@ main(int argc, char **argv)
             if (listen(listenfd, SOMAXCONN) == -1) {
                FATAL("listen() error");
             }
+            setfastopen(listenfd);
             setnonblocking(listenfd);
 
             listen_ctx_current->fd = listenfd;
