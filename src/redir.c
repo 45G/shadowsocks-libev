@@ -415,6 +415,68 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     } else if (err == CRYPTO_NEED_MORE) {
         return; // Wait for more
     }
+    
+    if (!server->got_irep)
+    {
+        struct socks105_initial_reply *irep;
+        ssize_t size = socks105_initial_reply_parse(server->buf->data, server->buf->len, &irep);
+        
+        if (size == SOCKS105_ERROR_BUFFER)
+            return;
+        if (size < 0)
+        {
+            LOGE("error parsing irep: %d", (int)size);
+            close_and_free_remote(EV_A_ remote);
+            close_and_free_server(EV_A_ server);
+        }
+        if (irep->irep_type == SOCKS105_INITIAL_REPLY_FAILURE)
+        {
+            LOGI("irep failure");
+            socks105_initial_reply_delete(irep);
+            close_and_free_remote(EV_A_ remote);
+            close_and_free_server(EV_A_ server);
+        }
+        
+        server->got_irep = 1;
+        socks105_initial_reply_delete(irep);
+        
+        memmove(server->buf->data, server->buf->data + size, size);
+        server->buf->len -= size;
+        
+        if (server->buf->len == 0)
+            return;
+    }
+    
+    if (!server->got_frep)
+    {
+        struct socks105_final_reply *frep;
+        ssize_t size = socks105_final_reply_parse(server->buf->data, server->buf->len, &frep);
+        
+        if (size == SOCKS105_ERROR_BUFFER)
+            return;
+        if (size < 0)
+        {
+            LOGE("error parsing frep: %d", (int)size);
+            close_and_free_remote(EV_A_ remote);
+            close_and_free_server(EV_A_ server);
+        }
+        if (frep->frep_type != SOCKS105_FINAL_REPLY_SUCCESS)
+        {
+            LOGI("frep failure: %d", (int)frep->frep_type);
+            socks105_final_reply_delete(frep);
+            close_and_free_remote(EV_A_ remote);
+            close_and_free_server(EV_A_ server);
+        }
+        
+        server->got_frep = 1;
+        socks105_final_reply_delete(frep);
+        
+        memmove(server->buf->data, server->buf->data + size, size);
+        server->buf->len -= size;
+        
+        if (server->buf->len == 0)
+            return;
+    }
 
     int s = send(server->fd, server->buf->data, server->buf->len, 0);
 
