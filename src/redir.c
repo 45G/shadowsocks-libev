@@ -683,6 +683,12 @@ new_server(int fd)
 
     server->hostname     = NULL;
     server->hostname_len = 0;
+    
+    socklen_t oplen = sizeof(int);
+    server->try_tfo = 0;
+    getsockopt(fd, SOL_TCP, TCP_FASTOPEN, &server->try_tfo, &oplen); //TODO: right????
+    server->got_irep = 0;
+    server->got_frep = 0;
 
     server->e_ctx = ss_align(sizeof(cipher_ctx_t));
     server->d_ctx = ss_align(sizeof(cipher_ctx_t));
