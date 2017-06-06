@@ -103,6 +103,7 @@ static int mode      = TCP_ONLY;
 static int nofile    = 0;
 #endif
 static int fast_open = 0;
+static int force_tfo = 0;
 
 static struct ev_signal sigint_watcher;
 static struct ev_signal sigterm_watcher;
@@ -824,7 +825,7 @@ new_server(int fd)
     server->hostname     = NULL;
     server->hostname_len = 0;
     
-    server->try_tfo  = was_tfo(fd);
+    server->try_tfo  = force_tfo || (fast_open && was_tfo(fd));
     server->got_irep = 0;
     server->got_frep = 0;
 
@@ -1052,6 +1053,7 @@ main(int argc, char **argv)
         { "password",    required_argument, NULL, GETOPT_VAL_PASSWORD },
         { "key",         required_argument, NULL, GETOPT_VAL_KEY },
         { "help",        no_argument,       NULL, GETOPT_VAL_HELP },
+        { "force-tfo",   no_argument,       NULL, GETOPT_VAL_FORCE_TFO },
         { NULL,          0,                 NULL, 0 }
     };
 
@@ -1143,6 +1145,9 @@ main(int argc, char **argv)
             break;
         case 'A':
             FATAL("One time auth has been deprecated. Try AEAD ciphers instead.");
+            break;
+        case GETOPT_VAL_FORCE_TFO:
+            force_tfo = 1;
             break;
         case '?':
             // The option character is not recognized.
@@ -1366,8 +1371,11 @@ main(int argc, char **argv)
             setfastopen(listenfd);
             setnonblocking(listenfd);
             
-            static const int one = 1;
-            setsockopt(listenfd, SOL_TCP, TCP_SAVE_SYN, &one, sizeof(one));
+            if (fast_open && !force_tfo)
+            {
+                static const int one = 1;
+                setsockopt(listenfd, SOL_TCP, TCP_SAVE_SYN, &one, sizeof(one));
+            }
 
             listen_ctx_current->fd = listenfd;
 
