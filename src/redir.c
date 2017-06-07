@@ -103,6 +103,7 @@ static int nofile    = 0;
 #endif
 static int fast_open = 0;
 static int force_tfo = 0;
+static int save_syns = 0;
 
 static struct ev_signal sigint_watcher;
 static struct ev_signal sigterm_watcher;
@@ -759,6 +760,9 @@ close_and_free_remote(EV_P_ remote_t *remote)
 static int
 was_tfo(int fd)
 {
+    if (!save_syns)
+        return 0;
+    
     unsigned char buf[BUF_SIZE];
     socklen_t buf_size = BUF_SIZE;
     int err = getsockopt(fd, SOL_TCP, TCP_SAVED_SYN, buf, &buf_size);
@@ -1368,7 +1372,10 @@ main(int argc, char **argv)
             if (fast_open && !force_tfo)
             {
                 static const int one = 1;
-                setsockopt(listenfd, SOL_TCP, TCP_SAVE_SYN, &one, sizeof(one));
+                if (setsockopt(listenfd, SOL_TCP, TCP_SAVE_SYN, &one, sizeof(one)) == 0)
+                    save_syns = 1;
+                else
+                    LOGE("can't detect TFO connection attempts");
             }
 
             listen_ctx_current->fd = listenfd;
