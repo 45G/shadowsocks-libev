@@ -760,6 +760,7 @@ close_and_free_remote(EV_P_ remote_t *remote)
 static int
 was_tfo(int fd)
 {
+#ifdef TCP_SAVED_SYN
     if (!save_syns)
         return 0;
     
@@ -801,7 +802,7 @@ was_tfo(int fd)
             return 0;
         i += optlen;
     }
-    
+#endif
     return 0;
 }
 
