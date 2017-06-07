@@ -104,7 +104,9 @@ static int nofile    = 0;
 #endif
 static int fast_open = 0;
 static int force_tfo = 0;
+#ifdef TCP_SAVE_SYN
 static int save_syns = 0;
+#endif
 
 static struct ev_signal sigint_watcher;
 static struct ev_signal sigterm_watcher;
