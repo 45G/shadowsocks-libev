@@ -12,4 +12,4 @@
     ignore = dirty
 [submodule "socks105"]
 	path = socks105
-	url = git@github.com:45G/socks105.git
+	url = https://github.com/45G/socks105.git
