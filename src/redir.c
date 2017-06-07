@@ -1375,6 +1375,7 @@ main(int argc, char **argv)
             setfastopen(listenfd);
             setnonblocking(listenfd);
             
+#ifdef TCP_SAVE_SYN
             if (fast_open && !force_tfo)
             {
                 static const int one = 1;
@@ -1383,6 +1384,9 @@ main(int argc, char **argv)
                 else
                     LOGE("can't detect TFO connection attempts");
             }
+#else
+            LOGE("can't detect TFO connection attempts");
+#endif
 
             listen_ctx_current->fd = listenfd;
 
