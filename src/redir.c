@@ -68,6 +68,14 @@
 #define EWOULDBLOCK EAGAIN
 #endif
 
+#ifndef TCP_SAVE_SYN
+#define TCP_SAVE_SYN 27
+#endif
+
+#ifndef TCP_SAVED_SYN
+#define TCP_SAVED_SYN 28
+#endif
+
 #ifndef BUF_SIZE
 #define BUF_SIZE 2048
 #endif
@@ -762,7 +770,6 @@ close_and_free_remote(EV_P_ remote_t *remote)
 static int
 was_tfo(int fd)
 {
-#ifdef TCP_SAVED_SYN
     if (!save_syns)
         return 0;
     
@@ -804,7 +811,7 @@ was_tfo(int fd)
             return 0;
         i += optlen;
     }
-#endif
+    
     return 0;
 }
 
@@ -1374,15 +1381,11 @@ main(int argc, char **argv)
             
             if (fast_open && !force_tfo)
             {
-#ifdef TCP_SAVE_SYN
                 static const int one = 1;
                 if (setsockopt(listenfd, SOL_TCP, TCP_SAVE_SYN, &one, sizeof(one)) == 0)
                     save_syns = 1;
                 else
                     LOGE("can't detect TFO connection attempts");
-#else
-                LOGI("detection of TFO connection attempts is unsupported");
-#endif
             }
 
             listen_ctx_current->fd = listenfd;
