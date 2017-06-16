@@ -510,6 +510,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         
         server->got_frep = 1;
         socks105_final_reply_delete(frep);
+        ev_io_start(EV_A_ & server->recv_ctx->io);
         
         memmove(server->buf->data, server->buf->data + size, size);
         server->buf->len -= size;
@@ -702,7 +703,14 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             remote->buf->len = 0;
             remote->buf->idx = 0;
             ev_io_stop(EV_A_ & remote_send_ctx->io);
-            ev_io_start(EV_A_ & server->recv_ctx->io);
+            if (!server->sent_req)
+            {
+                server->sent_req = 1;
+            }
+            else
+            {
+                ev_io_start(EV_A_ & server->recv_ctx->io);
+            }
         }
     }
 }
@@ -837,6 +845,7 @@ new_server(int fd)
     server->hostname_len = 0;
     
     server->try_tfo  = force_tfo || (fast_open && was_tfo(fd));
+    server->sent_req = 0;
     server->got_irep = 0;
     server->got_frep = 0;
 
