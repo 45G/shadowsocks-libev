@@ -65,6 +65,7 @@ typedef struct server {
     ev_timer delayed_connect_watcher;
     
     int try_tfo;
+    int sent_req;
     int got_irep;
     int got_frep;
 } server_t;
