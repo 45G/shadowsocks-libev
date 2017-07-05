@@ -694,14 +694,67 @@ send_initial_reply(int fd)
     return 0;
 }
 
+static void
+fill_address(struct socks105_server_info *info, int fd)
+{
+    static const struct socks105_server_info NULL_ADDR = {
+        .addr_type = SOCKS105_ADDR_IPV4,
+        .addr.ipv4 = 0,
+        .port = 0,
+    };
+    
+    if (fd < 0)
+    {
+        *info = NULL_ADDR;
+        return;
+    }
+    
+    char sockaddr_buf[sizeof(struct sockaddr_in6)]; //the biggest one
+    socklen_t len = sizeof(sockaddr_buf);
+    struct sockaddr *addr = (struct sockaddr *)sockaddr_buf;
+    int err;
+    
+    memset(sockaddr_buf, 0, len);
+    err = getsockname(fd, addr, &len);
+    if (err < 0)
+    {
+        LOGE("getsockname error %d", errno);
+        *info = NULL_ADDR;
+        return;
+    }
+    
+    if (addr->sa_family == AF_INET)
+    {
+        struct sockaddr_in *addr_4 = (struct sockaddr_in *)addr;
+        
+        info->addr_type = SOCKS105_ADDR_IPV4;
+        info->addr.ipv4 = addr_4->sin_addr.s_addr;
+        info->port = addr_4->sin_port;
+    }
+    else if (addr->sa_family == AF_INET6)
+    {
+        struct sockaddr_in6 *addr_6 = (struct sockaddr_in6 *)addr;
+        
+        info->addr_type = SOCKS105_ADDR_IPV6;
+        memcpy(&info->addr.ipv6, addr_6->sin6_addr.__in6_u.__u6_addr8, 16);
+        info->port = addr_6->sin6_port;
+    }
+    else // IPv7?
+    {
+        LOGE("getsockname returned weird AF %d", addr->sa_family);
+        *info = NULL_ADDR;
+    }
+}
+
 static int
-send_final_reply(int fd, enum socks105_final_reply_type type, const struct socks105_server_info *server_info, uint16_t data_offset)
+send_final_reply(int fd, enum socks105_final_reply_type type, int bind_fd, uint16_t data_offset)
 {
     struct socks105_final_reply frep = {
         .frep_type = type,
-        .server_info = *server_info,
         .data_offset = data_offset,        
     };
+    
+    fill_address(&frep.server_info, bind_fd);
     
     ssize_t size;
     char buf[1500];
@@ -917,20 +970,15 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             remote_t *remote = connect_to_remote(EV_A_ & info, server);
 
             if (remote == NULL) {
-                static const struct socks105_server_info NULL_ADDR = {
-                    .addr_type = SOCKS105_ADDR_IPV4,
-                    .addr.ipv4 = 0,
-                    .port = 0,
-                };
                 LOGE("connect error");
-                send_final_reply(server->fd, SOCKS105_FINAL_REPLY_REFUSED, &NULL_ADDR, 0);
+                send_final_reply(server->fd, SOCKS105_FINAL_REPLY_REFUSED, -1, 0);
                 close_and_free_server(EV_A_ server);
                 return;
             } else {
                 server->remote = remote;
                 remote->server = server;
                 
-                if (send_final_reply(server->fd, SOCKS105_FINAL_REPLY_SUCCESS, &req->server_info, req->initial_data_size) < 0)
+                if (send_final_reply(server->fd, SOCKS105_FINAL_REPLY_SUCCESS, remote->fd, req->initial_data_size) < 0)
                 {
                     LOGE("send final reply error");
                     close_and_free_remote(EV_A_ remote);
@@ -1067,7 +1115,7 @@ server_resolve_cb(struct sockaddr *addr, void *data)
 
     if (addr == NULL) {
         LOGE("unable to resolve %s", query->hostname);
-        send_final_reply(server->fd, SOCKS105_FINAL_REPLY_REFUSED, &server->req->server_info, server->req->initial_data_size);
+        send_final_reply(server->fd, SOCKS105_FINAL_REPLY_REFUSED, -1, server->req->initial_data_size);
         close_and_free_server(EV_A_ server);
     } else {
         if (verbose) {
@@ -1091,13 +1139,13 @@ server_resolve_cb(struct sockaddr *addr, void *data)
         remote_t *remote = connect_to_remote(EV_A_ & info, server);
         
         if (remote == NULL) {
-            send_final_reply(server->fd, SOCKS105_FINAL_REPLY_REFUSED, &server->req->server_info, server->req->initial_data_size);
+            send_final_reply(server->fd, SOCKS105_FINAL_REPLY_REFUSED, -1, server->req->initial_data_size);
             close_and_free_server(EV_A_ server);
         } else {
             server->remote = remote;
             remote->server = server;
             
-            if (send_final_reply(server->fd, SOCKS105_FINAL_REPLY_SUCCESS, &server->req->server_info, server->req->initial_data_size) < 0)
+            if (send_final_reply(server->fd, SOCKS105_FINAL_REPLY_SUCCESS, server->remote->fd, server->req->initial_data_size) < 0)
             {
                 LOGE("send final reply error");
                 close_and_free_remote(EV_A_ remote);
