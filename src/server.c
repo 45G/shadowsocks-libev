@@ -729,7 +729,7 @@ fill_address(struct socks105_server_info *info, int fd)
         
         info->addr_type = SOCKS105_ADDR_IPV4;
         info->addr.ipv4 = addr_4->sin_addr.s_addr;
-        info->port = addr_4->sin_port;
+        info->port = ntohs(addr_4->sin_port);
     }
     else if (addr->sa_family == AF_INET6)
     {
@@ -737,7 +737,7 @@ fill_address(struct socks105_server_info *info, int fd)
         
         info->addr_type = SOCKS105_ADDR_IPV6;
         memcpy(&info->addr.ipv6, addr_6->sin6_addr.__in6_u.__u6_addr8, 16);
-        info->port = addr_6->sin6_port;
+        info->port = ntohs(addr_6->sin6_port);
     }
     else // IPv7?
     {
