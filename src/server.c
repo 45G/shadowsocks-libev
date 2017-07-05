@@ -695,7 +695,7 @@ send_initial_reply(int fd)
 }
 
 static int
-send_final_reply(int fd, enum socks105_final_reply_type type, struct socks105_server_info *server_info, uint16_t data_offset)
+send_final_reply(int fd, enum socks105_final_reply_type type, const struct socks105_server_info *server_info, uint16_t data_offset)
 {
     struct socks105_final_reply frep = {
         .frep_type = type,
@@ -928,8 +928,13 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             remote_t *remote = connect_to_remote(EV_A_ & info, server);
 
             if (remote == NULL) {
+                static const struct socks105_server_info NULL_ADDR = {
+                    .addr_type = SOCKS105_ADDR_IPV4,
+                    .addr.ipv4 = 0,
+                    .port = 0,
+                };
                 LOGE("connect error");
-                send_final_reply(server->fd, SOCKS105_FINAL_REPLY_REFUSED, &req->server_info, req->initial_data_size);
+                send_final_reply(server->fd, SOCKS105_FINAL_REPLY_REFUSED, &NULL_ADDR, 0);
                 close_and_free_server(EV_A_ server);
                 return;
             } else {
