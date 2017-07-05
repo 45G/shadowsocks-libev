@@ -799,17 +799,6 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         }
         return;
     } else if (server->stage == STAGE_INIT) {
-        /*
-         * Shadowsocks TCP Relay Header: (AXED!)
-         *
-         *    +------+----------+----------+
-         *    | ATYP | DST.ADDR | DST.PORT |
-         *    +------+----------+----------+
-         *    |  1   | Variable |    2     |
-         *    +------+----------+----------+
-         *
-         */
-        
         struct socks105_request *req;
         ssize_t size = socks105_request_parse(server->buf->data, server->buf->len, &req);
         
