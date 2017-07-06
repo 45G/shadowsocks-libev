@@ -54,6 +54,8 @@
 #include <libcork/core.h>
 #include <udns.h>
 
+#include <socks105.h>
+
 #include "netutils.h"
 #include "utils.h"
 #include "socks5.h"
@@ -103,6 +105,7 @@ static int mode      = TCP_ONLY;
 static int ipv6first = 0;
 static int fast_open = 0;
 static int udp_fd    = 0;
+static int force_tfo = 0;
 
 static struct ev_signal sigint_watcher;
 static struct ev_signal sigterm_watcher;
@@ -560,6 +563,15 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     return;
                 }
             }
+            
+            struct socks105_request req = {
+                .auth_info = { 0, NULL },
+                .req_type = SOCKS105_REQ_TCP_CONNECT,
+                .tfo = force_tfo,
+                .initial_data_size = remote->buf->len,
+                .initial_data = remote->buf->data,
+            };
+            char fqdn[250];
 
             char host[257], ip[INET6_ADDRSTRLEN], port[16];
 
@@ -567,7 +579,6 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             abuf->idx = 0;
             abuf->len = 0;
 
-            abuf->data[abuf->len++] = request->atyp;
             int atyp = request->atyp;
 
             // get remote addr and port
@@ -577,8 +588,10 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 if (buf->len < request_len + in_addr_len + 2) {
                     return;
                 }
-                memcpy(abuf->data + abuf->len, buf->data + request_len, in_addr_len + 2);
-                abuf->len += in_addr_len + 2;
+                
+                req.server_info.addr_type = SOCKS105_ADDR_IPV4;
+                req.server_info.addr.ipv4 = *((uint32_t *)(buf->data + request_len));
+                req.server_info.port = ntohs(*(uint16_t *)(buf->data + request_len + in_addr_len));
 
                 if (acl || verbose) {
                     uint16_t p = ntohs(*(uint16_t *)(buf->data + request_len + in_addr_len));
@@ -592,9 +605,12 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 if (buf->len < request_len + 1 + name_len + 2) {
                     return;
                 }
-                abuf->data[abuf->len++] = name_len;
-                memcpy(abuf->data + abuf->len, buf->data + request_len + 1, name_len + 2);
-                abuf->len += name_len + 2;
+                
+                req.server_info.addr_type = SOCKS105_ADDR_DOMAIN;
+                memcpy(fqdn, buf->data + request_len + 1, name_len);
+                fqdn[name_len] = '0';
+                req.server_info.addr.domain = fqdn;
+                req.server_info.port = ntohs(*(uint16_t *)(buf->data + request_len + 1 + name_len));
 
                 if (acl || verbose) {
                     uint16_t p =
@@ -610,8 +626,10 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 if (buf->len < request_len + in6_addr_len + 2) {
                     return;
                 }
-                memcpy(abuf->data + abuf->len, buf->data + request_len, in6_addr_len + 2);
-                abuf->len += in6_addr_len + 2;
+                
+                req.server_info.addr_type = SOCKS105_ADDR_IPV6;
+                memcpy(req.server_info.addr.ipv6, buf->data + request_len, in6_addr_len);
+                req.server_info.port = ntohs(*(uint16_t *)(buf->data + request_len + in6_addr_len));
 
                 if (acl || verbose) {
                     uint16_t p = ntohs(*(uint16_t *)(buf->data + request_len + in6_addr_len));
@@ -625,10 +643,19 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 close_and_free_server(EV_A_ server);
                 return;
             }
+            
+            ssize_t req_size = socks105_request_pack(&req, abuf->data, abuf->capacity);
+            if (req_size < 0)
+            {
+                LOGE("Error packing request: %d", (int)req_size);
+                close_and_free_remote(EV_A_ remote);
+                close_and_free_server(EV_A_ server);
+            }
+            abuf->len = req_size;
 
-            size_t abuf_len  = abuf->len;
             int sni_detected = 0;
 
+#if 0
             if (atyp == 1 || atyp == 4) {
                 char *hostname;
                 uint16_t p = ntohs(*(uint16_t *)(abuf->data + abuf->len - 2));
@@ -663,13 +690,9 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     ss_free(hostname);
                 }
             }
+#endif
 
             server->stage = STAGE_STREAM;
-
-            buf->len -= (3 + abuf_len);
-            if (buf->len > 0) {
-                memmove(buf->data, buf->data + 3 + abuf_len, buf->len);
-            }
 
             if (verbose) {
                 if (sni_detected || atyp == 3)
@@ -776,11 +799,9 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     return;
                 }
             }
-
-            if (buf->len > 0) {
-                memcpy(remote->buf->data, buf->data, buf->len);
-                remote->buf->len = buf->len;
-            }
+            
+            memcpy(remote->buf->data, abuf->data, abuf->len);
+            remote->buf->len = abuf->len;
 
             server->remote = remote;
             remote->server = server;
@@ -1287,6 +1308,7 @@ main(int argc, char **argv)
         { "password",    required_argument, NULL, GETOPT_VAL_PASSWORD },
         { "key",         required_argument, NULL, GETOPT_VAL_KEY },
         { "help",        no_argument,       NULL, GETOPT_VAL_HELP },
+        { "force-tfo",   no_argument,       NULL, GETOPT_VAL_FORCE_TFO },
         { NULL,          0,                 NULL, 0 }
     };
 
@@ -1395,6 +1417,9 @@ main(int argc, char **argv)
 #endif
         case 'A':
             FATAL("One time auth has been deprecated. Try AEAD ciphers instead.");
+            break;
+        case GETOPT_VAL_FORCE_TFO:
+            force_tfo = 1;
             break;
         case '?':
             // The option character is not recognized.
