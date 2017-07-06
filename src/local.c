@@ -568,8 +568,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 .auth_info = { 0, NULL },
                 .req_type = SOCKS105_REQ_TCP_CONNECT,
                 .tfo = force_tfo,
-                .initial_data_size = remote->buf->len,
-                .initial_data = remote->buf->data,
+                .initial_data_size = 0,//remote->buf->len,
+                .initial_data = NULL, //remote->buf->data,
             };
             char fqdn[250];
 
@@ -971,6 +971,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             LOGE("error parsing frep: %d", (int)size);
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
+            return;
         }
         if (frep->frep_type != SOCKS105_FINAL_REPLY_SUCCESS)
         {
@@ -978,6 +979,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             socks105_final_reply_delete(frep);
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
+            return;
         }
         
         server->got_frep = 1;
