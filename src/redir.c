@@ -470,6 +470,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             LOGE("error parsing irep: %d", (int)size);
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
+            return;
         }
         if (irep->irep_type == SOCKS105_INITIAL_REPLY_FAILURE)
         {
@@ -477,6 +478,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             socks105_initial_reply_delete(irep);
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
+            return;
         }
         
         server->got_irep = 1;
@@ -501,6 +503,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             LOGE("error parsing frep: %d", (int)size);
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
+            return;
         }
         if (frep->frep_type != SOCKS105_FINAL_REPLY_SUCCESS)
         {
@@ -508,6 +511,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             socks105_final_reply_delete(frep);
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
+            return;
         }
         
         server->got_frep = 1;
