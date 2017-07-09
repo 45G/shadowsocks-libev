@@ -608,7 +608,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 
                 req.server_info.addr_type = SOCKS105_ADDR_DOMAIN;
                 memcpy(fqdn, buf->data + request_len + 1, name_len);
-                fqdn[name_len] = '0';
+                fqdn[name_len] = '\0';
                 req.server_info.addr.domain = fqdn;
                 req.server_info.port = ntohs(*(uint16_t *)(buf->data + request_len + 1 + name_len));
 
