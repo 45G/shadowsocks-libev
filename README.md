@@ -1,10 +1,11 @@
 # SOCKS 105 prototype based on shadowsocks-libev
 
-This is an early SOCKS 6 prototype (SOCKS 105 is our internal working name) based on shadowsocks-libev. Please see DEADME.original.md to familiarize yourself with shadowsocks.
+This is an early SOCKS 6 prototype (SOCKS 105 is our internal working name) based on shadowsocks-libev. Please see README.original.md to familiarize yourself with shadowsocks.
 
 The following apps have been ported:
  * ss-redir (transparent proxifier)
  * ss-server (proxy)
+
 The other apps (ss-local etc.) still speak the shadowsocks protocol and WILL NOT interoperate with ss-server.
 
 ## Differences from the SOCKSv6 draft
