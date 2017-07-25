@@ -571,7 +571,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 .initial_data_size = 0,//remote->buf->len,
                 .initial_data = NULL, //remote->buf->data,
             };
-            char fqdn[250];
+            char fqdn[256];
 
             char host[257], ip[INET6_ADDRSTRLEN], port[16];
 
@@ -931,7 +931,9 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     if (!server->got_irep)
     {
         struct socks105_initial_reply *irep;
-        ssize_t size = socks105_initial_reply_parse(remote->buf->data, remote->buf->len, &irep);
+        ssize_t size = socks105_initial_reply_parse(server->buf->data, server->buf->len, &irep);
+        
+        LOGE("irep size %d", (int)size);
         
         if (size == SOCKS105_ERROR_BUFFER)
             return;
@@ -954,17 +956,17 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         server->got_irep = 1;
         socks105_initial_reply_delete(irep);
         
-        memmove(remote->buf->data, remote->buf->data + size, size);
-        remote->buf->len -= size;
+        memmove(server->buf->data, server->buf->data + size, size);
+        server->buf->len -= size;
         
-        if (remote->buf->len == 0)
+        if (server->buf->len == 0)
             return;
     }
     
     if (!server->got_frep)
     {
         struct socks105_final_reply *frep;
-        ssize_t size = socks105_final_reply_parse(remote->buf->data, remote->buf->len, &frep);
+        ssize_t size = socks105_final_reply_parse(server->buf->data, server->buf->len, &frep);
         
         if (size == SOCKS105_ERROR_BUFFER)
             return;
@@ -988,10 +990,10 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         socks105_final_reply_delete(frep);
         //ev_io_start(EV_A_ & server->recv_ctx->io);
         
-        memmove(remote->buf->data, remote->buf->data + size, size);
-        remote->buf->len -= size;
+        memmove(server->buf->data, server->buf->data + size, size);
+        server->buf->len -= size;
         
-        if (remote->buf->len == 0)
+        if (server->buf->len == 0)
             return;
     }
 
