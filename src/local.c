@@ -802,6 +802,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             
             memcpy(remote->buf->data, abuf->data, abuf->len);
             remote->buf->len = abuf->len;
+            abuf->len = 0;
 
             server->remote = remote;
             remote->server = server;
