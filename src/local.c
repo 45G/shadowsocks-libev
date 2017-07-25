@@ -933,8 +933,6 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         struct socks105_initial_reply *irep;
         ssize_t size = socks105_initial_reply_parse(server->buf->data, server->buf->len, &irep);
         
-        LOGE("irep size %d", (int)size);
-        
         if (size == SOCKS105_ERROR_BUFFER)
             return;
         if (size < 0)
