@@ -4,9 +4,10 @@ This is an early SOCKS 6 prototype (SOCKS 105 is our internal working name) base
 
 The following apps have been ported:
  * ss-redir (transparent proxifier)
+ * ss-local (SOCKS 5 to SOCKS 105 translator)
  * ss-server (proxy)
 
-The other apps (ss-local etc.) still speak the shadowsocks protocol and WILL NOT interoperate with ss-server.
+The other apps (ss-nat etc.) still speak the shadowsocks protocol and WILL NOT interoperate with ss-server.
 
 ## Differences from the SOCKSv6 draft
 
@@ -28,7 +29,7 @@ The server can be deployed as follows:
 ./ss-server -p 1080 -m plain --fast-open 
 
 
-The proxifier requires some iptables rules. The following example proxies all TCP traffic from the user proxyme:
+The transparent proxifier (ss-redir) requires some iptables rules. The following example proxies all TCP traffic from the user proxyme:
 
 iptables -t nat -N SHADOWSOCKS
 iptables -t mangle -N SHADOWSOCKS
@@ -45,6 +46,6 @@ iptables -t mangle -A OUTPUT -j SHADOWSOCKS_MARK
 
 ## TFO on the proxy-server leg
 
-As per the draft, the SOCKS proxy does not attempt to use TFO to connect to the server unless the proxy client requests it. Newer Linux kernel versions (4.4+) allow userspace applications to inspect the SYN of an accepted conection.
+As per the draft, the SOCKS proxy does not attempt to use TFO to connect to the server unless the proxy client requests it.
 
-By deffault, ss-redir will ask for TFO only if it detects that the original client attempted TFO. You can override this behavior with the "--force-tfo" argument.
+Newer Linux kernel versions (4.4+) allow userspace applications to inspect the SYN of an accepted conection. By deffault, ss-redir will ask for TFO only if it detects that the original client attempted TFO. You can override this behavior with the "--force-tfo" argument.
