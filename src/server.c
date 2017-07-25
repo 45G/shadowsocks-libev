@@ -978,13 +978,6 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 server->remote = remote;
                 remote->server = server;
                 
-                if (send_final_reply(server->fd, SOCKS105_FINAL_REPLY_SUCCESS, remote->fd, req->initial_data_size) < 0)
-                {
-                    LOGE("send final reply error");
-                    close_and_free_remote(EV_A_ remote);
-                    close_and_free_server(EV_A_ server);
-                    return;
-                }
                 // XXX: should handle buffer carefully
                 if (server->buf->len > 0) {
                     brealloc(remote->buf, server->buf->len, BUF_SIZE);
@@ -1144,14 +1137,6 @@ server_resolve_cb(struct sockaddr *addr, void *data)
         } else {
             server->remote = remote;
             remote->server = server;
-            
-            if (send_final_reply(server->fd, SOCKS105_FINAL_REPLY_SUCCESS, server->remote->fd, server->req->initial_data_size) < 0)
-            {
-                LOGE("send final reply error");
-                close_and_free_remote(EV_A_ remote);
-                close_and_free_server(EV_A_ server);
-                return;
-            }
 
             // XXX: should handle buffer carefully
             if (server->buf->len > 0) {
@@ -1276,6 +1261,14 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
                 LOGI("remote connected");
             }
             remote_send_ctx->connected = 1;
+	    
+            if (send_final_reply(server->fd, SOCKS105_FINAL_REPLY_SUCCESS, remote->fd, server->req->initial_data_size) < 0)
+            {
+                LOGE("send final reply error");
+                close_and_free_remote(EV_A_ remote);
+                close_and_free_server(EV_A_ server);
+                return;
+            }
 
             // Clear the state of this address in the block list
             reset_addr(server->fd);
@@ -1290,6 +1283,15 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         } else {
             ERROR("getpeername");
             // not connected
+	    
+            if (send_final_reply(server->fd, SOCKS105_FINAL_REPLY_REFUSED, remote->fd, server->req->initial_data_size) < 0)
+            {
+                LOGE("send final reply error");
+                close_and_free_remote(EV_A_ remote);
+                close_and_free_server(EV_A_ server);
+                return;
+            }
+	    
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
