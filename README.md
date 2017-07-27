@@ -1,8 +1,8 @@
-# SOCKS 105 prototype based on shadowsocks-libev
+# SOCKS 6 (a.k.a. 105) prototype based on shadowsocks-libev
 
 This is an early SOCKS 6 prototype (SOCKS 105 is our internal working name) based on shadowsocks-libev. Please see README.original.md to familiarize yourself with shadowsocks.
 
-The following apps have been ported:
+The following apps have been adapted to speak SOCKS 105:
  * ss-redir (transparent proxifier)
  * ss-local (SOCKS 5 to SOCKS 105 translator)
  * ss-server (proxy)
@@ -48,4 +48,4 @@ iptables -t mangle -A OUTPUT -j SHADOWSOCKS_MARK
 
 As per the draft, the SOCKS proxy does not attempt to use TFO to connect to the server unless the proxy client requests it.
 
-Newer Linux kernel versions (4.4+) allow userspace applications to inspect the SYN of an accepted conection. By deffault, ss-redir will ask for TFO only if it detects that the original client attempted TFO. You can override this behavior with the "--force-tfo" argument.
+Newer Linux kernel versions (4.4+) allow userspace applications to inspect the SYN of an accepted conection. By default, ss-redir will ask for TFO only if it detects that the original client attempted TFO. You can override this behavior with the "--force-tfo" argument.
