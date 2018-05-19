@@ -472,7 +472,12 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         }
         
         if (oprep->optionSet.idempotence.windowSize > 0)
-            S6U_TokenWallet_updateWindow(remote->wallet, oprep->optionSet.idempotence.windowBase, oprep->optionSet.idempotence.windowSize);
+        {
+            if (remote->wallet == NULL)
+                remote->wallet = S6U_TokenWallet_create(oprep->optionSet.idempotence.windowBase, oprep->optionSet.idempotence.windowSize);
+            else
+                S6U_TokenWallet_updateWindow(remote->wallet, oprep->optionSet.idempotence.windowBase, oprep->optionSet.idempotence.windowSize);
+        }
         
         if (oprep->code != SOCKS6_OPERATION_REPLY_SUCCESS)
         {
@@ -569,7 +574,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             }
             
             uint32_t token;
-            if (S6U_TokenWallet_extract(remote->wallet, &token)) {
+            if (remote->wallet != NULL && S6U_TokenWallet_extract(remote->wallet, &token)) {
                  req.optionSet.idempotence.spend = 1;
                  req.optionSet.idempotence.token = token;
             }
@@ -717,7 +722,7 @@ new_remote(int fd, int timeout)
     ev_timer_init(&remote->recv_ctx->watcher, remote_timeout_cb,
                   timeout, 0);
     
-    remote->wallet = S6U_TokenWallet_create();
+    remote->wallet = NULL;
 
     return remote;
 }
@@ -735,7 +740,8 @@ free_remote(remote_t *remote)
     ss_free(remote->recv_ctx);
     ss_free(remote->send_ctx);
     
-    S6U_TokenWallet_destroy(remote->wallet);
+    if (remote->wallet)
+	S6U_TokenWallet_destroy(remote->wallet);
     
     ss_free(remote);
 }
