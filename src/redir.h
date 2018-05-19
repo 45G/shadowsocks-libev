@@ -28,6 +28,8 @@
 #include <ev.h>
 #endif
 
+#include <socks6util.h>
+
 #include "crypto.h"
 #include "jconf.h"
 
@@ -81,6 +83,8 @@ typedef struct remote {
     struct server *server;
     uint32_t counter;
     struct sockaddr *addr;
+    
+    S6U_TokenWallet *wallet;
 } remote_t;
 
 #endif // _REDIR_H

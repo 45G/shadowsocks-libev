@@ -811,13 +811,18 @@ fill_address(struct S6M_OpReply *op_reply, int fd)
 }
 
 static int
-send_op_reply(int fd, enum SOCKS6OperationReplyCode code, int bind_fd, uint16_t data_offset)
+send_op_reply(int fd, enum SOCKS6OperationReplyCode code, int bind_fd, uint16_t data_offset, enum SOCKS6TokenExpenditureCode exp_code, uint32_t win_base, uint32_t win_size)
 {
     struct S6M_OpReply op_rep = {
         .code = code,
         .initDataOff = data_offset,
         .optionSet = {
             .mptcp = S6U_Socket_hasMPTCP(bind_fd),
+            .idempotence = {
+                .replyCode = exp_code,
+                .windowBase = win_base,
+                .windowSize = win_size,
+            }
         },
     };
     
@@ -938,6 +943,16 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             close_and_free_server(EV_A_ server);
             return;
         }
+        
+        if (server->req->optionSet.idempotence.request) {
+            enum SOCKS6TokenExpenditureCode code = S6U_TokenBank_withdraw(server->bank, server->req->optionSet.idempotence.token);
+            if (code != SOCKS6_TOK_EXPEND_SUCCESS)
+            {
+                LOGE("can't spend token %u code %d", server->req->optionSet.idempotence.token, code);
+                send_op_reply(server->fd, SOCKS6_OPERATION_REPLY_FAILURE, -1, 0, code, S6U_TokenBank_getBase(server->bank), S6U_TokenBank_getSize(server->bank));
+                close_and_free_server(EV_A_ server);
+            }
+        }
 
         int need_query = 0;
         char atyp      = server->req->addr.type;
@@ -1031,7 +1046,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
             if (remote == NULL) {
                 LOGE("connect error");
-                send_op_reply(server->fd, SOCKS6_OPERATION_REPLY_REFUSED, -1, 0);
+                send_op_reply(server->fd, SOCKS6_OPERATION_REPLY_REFUSED, -1, 0, SOCKS6_TOK_EXPEND_SUCCESS, S6U_TokenBank_getBase(server->bank), S6U_TokenBank_getSize(server->bank));
                 close_and_free_server(EV_A_ server);
                 return;
             } else {
@@ -1174,7 +1189,7 @@ resolv_cb(struct sockaddr *addr, void *data)
 
     if (addr == NULL) {
         LOGE("unable to resolve %s", query->hostname);
-        send_op_reply(server->fd, SOCKS6_OPERATION_REPLY_FAILURE, -1, 0);
+        send_op_reply(server->fd, SOCKS6_OPERATION_REPLY_FAILURE, -1, 0, SOCKS6_TOK_EXPEND_SUCCESS, S6U_TokenBank_getBase(server->bank), S6U_TokenBank_getSize(server->bank));
         close_and_free_server(EV_A_ server);
     } else {
         if (verbose) {
@@ -1198,7 +1213,7 @@ resolv_cb(struct sockaddr *addr, void *data)
         remote_t *remote = connect_to_remote(EV_A_ & info, server);
 
         if (remote == NULL) {
-            send_op_reply(server->fd, SOCKS6_OPERATION_REPLY_REFUSED, -1, 0);
+            send_op_reply(server->fd, SOCKS6_OPERATION_REPLY_REFUSED, -1, 0, SOCKS6_TOK_EXPEND_SUCCESS, S6U_TokenBank_getBase(server->bank), S6U_TokenBank_getSize(server->bank));
             close_and_free_server(EV_A_ server);
         } else {
             server->remote = remote;
@@ -1359,7 +1374,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             }
             remote_send_ctx->connected = 1;
             
-            if (send_op_reply(server->fd, SOCKS6_OPERATION_REPLY_SUCCESS, remote->fd, server->req->initialDataLen) < 0)
+            if (send_op_reply(server->fd, SOCKS6_OPERATION_REPLY_SUCCESS, remote->fd, server->req->initialDataLen, SOCKS6_TOK_EXPEND_SUCCESS, S6U_TokenBank_getBase(server->bank), S6U_TokenBank_getSize(server->bank)) < 0)
             {
                 LOGE("error sending op reply");
                 close_and_free_remote(EV_A_ remote);
@@ -1380,7 +1395,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         } else {
             ERROR("getpeername");
             // not connected
-            send_op_reply(server->fd, SOCKS6_OPERATION_REPLY_REFUSED, -1, 0);
+            send_op_reply(server->fd, SOCKS6_OPERATION_REPLY_REFUSED, -1, 0, SOCKS6_TOK_EXPEND_SUCCESS, S6U_TokenBank_getBase(server->bank), S6U_TokenBank_getSize(server->bank));
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
@@ -1537,6 +1552,7 @@ new_server(int fd, listen_ctx_t *listener)
     cork_dllist_add(&connections, &server->entries);
     
     server->req = NULL;
+    server->bank = S6U_TokenBank_create(1234, 10, 5, 6);
 
     return server;
 }
@@ -1575,6 +1591,7 @@ free_server(server_t *server)
     
     if (server->req)
         S6M_Request_free(server->req);
+    S6U_TokenBank_destroy(server->bank);
 
     ss_free(server->recv_ctx);
     ss_free(server->send_ctx);

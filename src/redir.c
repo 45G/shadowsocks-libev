@@ -471,6 +471,9 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         }
         
+        if (oprep->optionSet.idempotence.windowSize > 0)
+            S6U_TokenWallet_updateWindow(remote->wallet, oprep->optionSet.idempotence.windowBase, oprep->optionSet.idempotence.windowSize);
+        
         if (oprep->code != SOCKS6_OPERATION_REPLY_SUCCESS)
         {
             LOGE("operation failed %d", oprep->code);
@@ -563,6 +566,15 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
                 req.addr.type = SOCKS6_ADDR_IPV4;
                 req.addr.ipv4 = ((struct sockaddr_in *)&(server->destaddr))->sin_addr;
                 req.port = ntohs(((struct sockaddr_in *)&(server->destaddr))->sin_port);
+            }
+            
+            uint32_t token;
+            if (S6U_TokenWallet_extract(remote->wallet, &token)) {
+                 req.optionSet.idempotence.spend = 1;
+                 req.optionSet.idempotence.token = token;
+            }
+            else {
+                LOGE("no token to spend; going bareback");
             }
 
             ssize_t req_len = S6M_Request_pack(&req, (uint8_t *)abuf->data, abuf->capacity);
@@ -704,6 +716,8 @@ new_remote(int fd, int timeout)
                   min(MAX_CONNECT_TIMEOUT, timeout), 0);
     ev_timer_init(&remote->recv_ctx->watcher, remote_timeout_cb,
                   timeout, 0);
+    
+    remote->wallet = S6U_TokenWallet_create();
 
     return remote;
 }
@@ -720,6 +734,9 @@ free_remote(remote_t *remote)
     }
     ss_free(remote->recv_ctx);
     ss_free(remote->send_ctx);
+    
+    S6U_TokenWallet_destroy(remote->wallet);
+    
     ss_free(remote);
 }
 

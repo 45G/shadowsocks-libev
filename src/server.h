@@ -33,6 +33,7 @@
 #endif
 
 #include <socks6msg.h>
+#include <socks6util.h>
 
 #ifdef __MINGW32__
 #include "winsock.h"
@@ -97,6 +98,7 @@ typedef struct server {
 #endif
     
     struct S6M_Request *req;
+    S6U_TokenBank *bank;
 } server_t;
 
 typedef struct query {
