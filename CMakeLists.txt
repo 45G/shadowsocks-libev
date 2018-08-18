@@ -58,6 +58,9 @@ include_directories(libcork/include)
 include_directories(libipset/include)
 include_directories(libbloom/murmur2)
 include_directories(libbloom)
+include_directories(libsocks6msg)
+include_directories(libsocks6util)
+include_directories(.)
 
 set(LIBCORK_SOURCE
         libcork/src/libcork/cli/commands.c
@@ -140,6 +143,29 @@ add_library(bloom-shared SHARED ${LIBBLOOM_SOURCE})
 target_link_libraries(ipset-shared cork-shared bloom-shared)
 set_target_properties(bloom-shared PROPERTIES OUTPUT_NAME bloom)
 endif ()
+
+set(LIBSOCKS6_SOURCE
+        libsocks6msg/socks6msg_address.cc
+        libsocks6msg/socks6msg_authreply.cc
+        libsocks6msg/socks6msg_cbindings.cc
+        libsocks6msg/socks6msg_exception.cc
+        libsocks6msg/socks6msg_opreply.cc
+        libsocks6msg/socks6msg_option.cc
+        libsocks6msg/socks6msg_optionset.cc
+        libsocks6msg/socks6msg_request.cc
+        libsocks6msg/socks6msg_sanity.cc
+        libsocks6msg/socks6msg_string.cc
+        libsocks6msg/socks6msg_usrpasswd.cc
+        libsocks6msg/socks6msg_version.cc
+        libsocks6util/socks6util_cbindings.cc
+        libsocks6util/socks6util_idempotence.cc
+        libsocks6util/socks6util_packet.cc
+        libsocks6util/socks6util_socket.cc
+        libsocks6util/socks6util_tfosafety.cc
+        )
+
+
+add_library(socks6 STATIC ${LIBSOCKS6_SOURCE})
 
 add_subdirectory(src)
 add_subdirectory(doc)

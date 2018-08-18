@@ -10,3 +10,9 @@
 	path = libbloom
 	url = https://github.com/shadowsocks/libbloom.git
     ignore = dirty
+[submodule "libsocks6msg"]
+	path = libsocks6msg
+	url = git@github.com:45G/libsocks6msg.git
+[submodule "libsocks6util"]
+	path = libsocks6util
+	url = git@github.com:45G/libsocks6util.git
